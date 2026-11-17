@@ -19,7 +19,10 @@ export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec;
  */
 export class SessionManager extends EventEmitter {
   private readonly live = new Map<string, { handle: RunHandle; timer: NodeJS.Timeout; stopReason?: SessionStatus }>();
-  lastRateLimit: unknown = null;
+  lastRateLimit: any = null;
+  /** Epoch ms until which no session starts (subscription limit hit). Owner policy: wait, never downgrade the model. */
+  rateLimitedUntil = 0;
+  private resumeTimer: NodeJS.Timeout | null = null;
 
   private readonly db: DB;
   private readonly adapter: RuntimeAdapter;
@@ -48,6 +51,7 @@ export class SessionManager extends EventEmitter {
   /** Start queued sessions while below the concurrency limit and the org is not paused. */
   pump() {
     if (getPolicy(this.db, 'org.paused', false)) return;
+    if (this.rateLimitedUntil > Date.now()) { this.scheduleResume(); return; }
     const max = getPolicy(this.db, 'runtime.maxConcurrentSessions', 2);
     while (this.live.size < max) {
       const next = this.db.prepare("SELECT id, spec FROM sessions WHERE status = 'queued' ORDER BY queued_at, rowid LIMIT 1").get() as { id: string; spec: string } | undefined;
@@ -65,10 +69,13 @@ export class SessionManager extends EventEmitter {
         this.setStatus(id, 'running');
       } else if (e.kind === 'rate_limit') {
         this.lastRateLimit = e.info;
+        const info = e.info as { status?: string; resetsAt?: number } | null;
+        if (info && info.status && info.status !== 'allowed' && info.resetsAt) this.markLimited(info.resetsAt * 1000);
         this.emit('rateLimit', e.info);
       } else if (e.kind === 'result') {
         this.db.prepare(`UPDATE sessions SET result_text = ?, claude_session_id = ?, cost_usd_estimate = ?, input_tokens = ?, output_tokens = ?, num_turns = ? WHERE id = ?`)
           .run(e.text, e.claudeSessionId, e.costUsdEstimate, e.inputTokens, e.outputTokens, e.numTurns, id);
+        if (!e.ok && isLimitText(e.text)) this.markLimited(this.lastRateLimit?.resetsAt ? this.lastRateLimit.resetsAt * 1000 : Date.now() + 15 * 60_000);
       }
       if (e.kind !== 'unknown') insEvent.run(id, e.kind, JSON.stringify(e));
       this.emit('event', id, e);
@@ -87,7 +94,8 @@ export class SessionManager extends EventEmitter {
       const hasResult = row.result_text !== null;
       const failedResult = this.db.prepare("SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'result' AND json_extract(data, '$.ok') = 0").get(id);
       const status: SessionStatus = entry?.stopReason ?? (code === 0 && hasResult && !failedResult ? 'completed' : 'failed');
-      this.finish(id, status, status === 'failed' ? `exit code ${code}` : null);
+      if (status === 'failed' && this.rateLimitedUntil > Date.now()) this.requeueAfterLimit(id, spec);
+      else this.finish(id, status, status === 'failed' ? `exit code ${code}` : null);
       this.pump();
     });
   }
@@ -113,6 +121,30 @@ export class SessionManager extends EventEmitter {
     return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
   }
 
+  private markLimited(untilMs: number) {
+    if (untilMs <= this.rateLimitedUntil) return;
+    this.rateLimitedUntil = untilMs;
+    audit(this.db, 'system', 'runtime.rateLimited', null, { until: new Date(untilMs).toISOString() });
+    this.emit('limited', untilMs);
+  }
+
+  /** Put a limit-killed session back in the queue; resume the same Claude conversation when possible. */
+  private requeueAfterLimit(id: string, spec: RunSpec) {
+    const row = this.get(id)!;
+    const next: RunSpec = row.claude_session_id
+      ? { ...spec, resumeSessionId: row.claude_session_id, prompt: 'You were interrupted by a usage limit. Continue the task exactly where you left off.' }
+      : spec;
+    this.db.prepare("UPDATE sessions SET status = 'queued', spec = ?, result_text = NULL, pid = NULL, started_at = NULL, error = ? WHERE id = ?")
+      .run(JSON.stringify(next), `usage limit - resumes after ${new Date(this.rateLimitedUntil).toISOString()}`, id);
+    this.emit('status', id, 'queued');
+  }
+
+  private scheduleResume() {
+    if (this.resumeTimer) return;
+    this.resumeTimer = setTimeout(() => { this.resumeTimer = null; this.pump(); }, Math.max(1000, this.rateLimitedUntil - Date.now() + 5000));
+    this.resumeTimer.unref();
+  }
+
   private setStatus(id: string, s: SessionStatus) {
     this.db.prepare('UPDATE sessions SET status = ? WHERE id = ?').run(s, id);
     this.emit('status', id, s);
@@ -123,3 +155,5 @@ export class SessionManager extends EventEmitter {
     this.emit('status', id, s);
   }
 }
+
+export const isLimitText = (t: string) => /usage limit|rate limit|limit reached|resets? at/i.test(t);

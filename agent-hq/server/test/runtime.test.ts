@@ -106,3 +106,29 @@ test('restart marks running sessions interrupted but keeps queue', async () => {
   assert.equal(ad2.runs[0].spec.prompt, 'b');
   assert.equal(sm2.get(b)!.status, 'starting');
 });
+
+test('usage limit: session is requeued with --resume and nothing starts until reset', async () => {
+  const { sm, ad } = setup(2);
+  const a = sm.enqueue({ agentId: 'ceo', spec: spec('build it'), actor: 'owner' });
+  const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+  ad.runs[0].emit({ kind: 'init', claudeSessionId: 'conv-1', model: 'opus', tools: [] });
+  ad.runs[0].emit({ kind: 'rate_limit', info: { status: 'rejected', resetsAt } });
+  ad.runs[0].emit({ ...result(false), claudeSessionId: 'conv-1', text: "You've hit your usage limit" });
+  ad.runs[0].exit(1);
+  await tick();
+  const row = sm.get(a)!;
+  assert.equal(row.status, 'queued', 'not failed - waits for the reset');
+  assert.equal(sm.rateLimitedUntil, resetsAt * 1000);
+  sm.enqueue({ agentId: 'ceo', spec: spec('other'), actor: 'owner' });
+  assert.equal(ad.runs.length, 1, 'no new starts while limited');
+
+  sm.rateLimitedUntil = Date.now() - 1; // simulate the reset time passing
+  sm.pump();
+  assert.equal(ad.runs[1].spec.resumeSessionId, 'conv-1', 'resumes the same Claude conversation');
+  assert.equal(ad.runs[1].spec.model, 'haiku', 'model is never downgraded or changed');
+});
+
+test('owner policy: every seeded agent runs on opus', () => {
+  const { db } = setup();
+  assert.deepEqual(db.prepare("SELECT DISTINCT model FROM agents").all().map((r: any) => r.model), ['opus']);
+});

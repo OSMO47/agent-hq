@@ -13,6 +13,7 @@ export const PERMISSIONS = {
 };
 
 export const DEFAULT_POLICIES: Record<string, unknown> = {
+  'runtime.defaultModel': 'opus',
   'runtime.maxConcurrentSessions': 2,
   'runtime.sessionTimeoutMs': 20 * 60_000,
   'runtime.maxTurnsPerSession': 30,
@@ -31,21 +32,21 @@ const DEPARTMENTS: [id: string, name: string, leader: [id: string, name: string,
 ];
 
 const SPECIALISTS: [dept: string, reportsTo: string, role: string, model: string, preset: keyof typeof PERMISSIONS][] = [
-  ['eng', 'eng-dir', 'System Architect', 'sonnet', 'planner'],
-  ['eng', 'eng-dir', 'Backend Developer', 'sonnet', 'builder'],
-  ['eng', 'eng-dir', 'Frontend Developer', 'sonnet', 'builder'],
-  ['eng', 'eng-dir', 'Database Engineer', 'sonnet', 'builder'],
-  ['eng', 'eng-dir', 'Integration Engineer', 'sonnet', 'builder'],
-  ['product', 'prod-dir', 'Product Manager', 'sonnet', 'planner'],
-  ['product', 'prod-dir', 'UI/UX Designer', 'sonnet', 'builder'],
-  ['product', 'prod-dir', 'UX Researcher', 'haiku', 'planner'],
-  ['qa', 'qa-dir', 'QA Engineer', 'sonnet', 'builder'],
-  ['qa', 'qa-dir', 'Automation Tester', 'sonnet', 'builder'],
-  ['qa', 'qa-dir', 'Performance Tester', 'sonnet', 'builder'],
-  ['sec', 'sec-dir', 'Security Analyst', 'sonnet', 'planner'],
-  ['sec', 'sec-dir', 'Application Security Engineer', 'sonnet', 'builder'],
-  ['docs', 'docs-dir', 'Technical Writer', 'haiku', 'builder'],
-  ['docs', 'docs-dir', 'Documentation Engineer', 'haiku', 'builder'],
+  ['eng', 'eng-dir', 'System Architect', 'opus', 'planner'],
+  ['eng', 'eng-dir', 'Backend Developer', 'opus', 'builder'],
+  ['eng', 'eng-dir', 'Frontend Developer', 'opus', 'builder'],
+  ['eng', 'eng-dir', 'Database Engineer', 'opus', 'builder'],
+  ['eng', 'eng-dir', 'Integration Engineer', 'opus', 'builder'],
+  ['product', 'prod-dir', 'Product Manager', 'opus', 'planner'],
+  ['product', 'prod-dir', 'UI/UX Designer', 'opus', 'builder'],
+  ['product', 'prod-dir', 'UX Researcher', 'opus', 'planner'],
+  ['qa', 'qa-dir', 'QA Engineer', 'opus', 'builder'],
+  ['qa', 'qa-dir', 'Automation Tester', 'opus', 'builder'],
+  ['qa', 'qa-dir', 'Performance Tester', 'opus', 'builder'],
+  ['sec', 'sec-dir', 'Security Analyst', 'opus', 'planner'],
+  ['sec', 'sec-dir', 'Application Security Engineer', 'opus', 'builder'],
+  ['docs', 'docs-dir', 'Technical Writer', 'opus', 'builder'],
+  ['docs', 'docs-dir', 'Documentation Engineer', 'opus', 'builder'],
 ];
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -65,7 +66,7 @@ export function seed(db: DB): boolean {
     const insDept = db.prepare('INSERT INTO departments (id, name, leader_id) VALUES (?, ?, ?)');
     for (const [id, name, [lid, lname, lrole]] of DEPARTMENTS) {
       insDept.run(id, name, lid);
-      insAgent.run(lid, lname, lrole, 2, id, 'ceo', 'sonnet',
+      insAgent.run(lid, lname, lrole, 2, id, 'ceo', 'opus',
         `You are the ${lrole}. Break assignments from the CEO into subtasks, delegate to your team, review their work, report progress and blockers, and submit recruitment requests when a capability is missing.`,
         JSON.stringify(PERMISSIONS.planner));
     }

@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS recruitment_requests (
   justification    TEXT NOT NULL,
   skills           TEXT NOT NULL DEFAULT '[]',
   responsibilities TEXT NOT NULL DEFAULT '',
-  model            TEXT NOT NULL DEFAULT 'sonnet',
+  model            TEXT NOT NULL DEFAULT 'opus',
   workload         TEXT NOT NULL DEFAULT '',
   estimated_usage  TEXT NOT NULL DEFAULT '',
   benefits         TEXT NOT NULL DEFAULT '',
