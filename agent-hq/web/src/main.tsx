@@ -50,7 +50,7 @@ function App() {
   const [page, param] = route.split('/');
   const [theme, setTheme] = useTheme();
   const connected = useConnected();
-  const ov = useResource<any>('/api/overview', ['session.status', 'paused', 'limited', 'org'], 15000);
+  const ov = useResource<any>('/api/overview', ['session.status', 'paused', 'limited', 'org', 'usage'], 15000);
   const org = useResource<{ departments: any[]; agents: any[] }>('/api/org', ['org', 'session.status']);
   const [right, setRight] = useState(() => store.get('hq.right', '1') === '1');
   useEffect(() => store.set('hq.right', right ? '1' : '0'), [right]);
@@ -204,6 +204,12 @@ function Menu({ page, theme, setTheme, paused, reloadOv, onToast, onClose }:
 function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight }:
   { agent: any; org: any; page: string; ov: any; reloadOv: () => void; onToast: (s: string) => void; right: boolean; setRight: (f: (r: boolean) => boolean) => void }) {
   const [confirm, setConfirm] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const check = async () => {
+    setChecking(true);
+    try { await api('POST', '/api/owner/check-usage'); reloadOv(); } catch (e) { onToast(`Usage check failed: ${(e as Error).message}`); }
+    setChecking(false);
+  };
   const five = ov?.claude?.lastRateLimit?.unifiedWindows?.five_hour;
   const pct = five ? Math.round(five.utilization * 100) : null;
   const dept = agent && org?.departments.find((d: any) => d.id === agent.department_id);
@@ -233,12 +239,13 @@ function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight
         {ov?.claude?.rateLimitedUntil && <span className="pill text-kin">limit · resumes {new Date(ov.claude.rateLimitedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
         {ov?.paused && <span className="pill text-kin">paused</span>}
         {ov?.claude?.costEstimateTodayUsd != null && <span className="pill text-matcha" title="API-equivalent estimate today; not a bill">${ov.claude.costEstimateTodayUsd.toFixed(2)}</span>}
-        <div className="w-28" title={five ? `Claude 5-hour window: ${pct}%` : 'Reported after the first session runs'}>
-          <div className="mb-1 text-[9.5px] font-bold tracking-wider text-dim">CLAUDE 5H {pct != null && <span className="font-normal text-faint">{pct}%</span>}</div>
+        <button className="w-28 text-left" onClick={check} disabled={checking}
+          title={five ? `Claude 5-hour window: ${pct}% · updated ${ago(ov?.claude?.lastRateLimitAt)} · click to refresh` : 'Click to ask Claude for current usage'}>
+          <div className="mb-1 text-[9.5px] font-bold tracking-wider text-dim">CLAUDE 5H <span className="font-normal text-faint">{checking ? 'checking…' : pct != null ? `${pct}%` : 'click to check'}</span></div>
           <div className="h-1 overflow-hidden rounded-full bg-line">
-            <div className={`h-full rounded-full ${pct == null ? '' : pct >= 90 ? 'bg-shu' : pct >= 70 ? 'bg-kin' : 'bg-matcha'}`} style={{ width: `${pct ?? 0}%` }} />
+            <div className={`h-full rounded-full ${pct == null ? '' : pct >= 90 ? 'bg-shu' : pct >= 70 ? 'bg-kin' : 'bg-matcha'} ${checking ? 'breathe' : ''}`} style={{ width: `${pct ?? 0}%` }} />
           </div>
-        </div>
+        </button>
         <button className="btn btn-danger" onClick={stopAll}>■ {confirm ? 'Click again' : 'Stop all'}</button>
         <button className="btn btn-ghost h-7 w-7 p-0" onClick={() => setRight((r) => !r)} title="Toggle right bar (Ctrl+.)" aria-label="Toggle right bar">{right ? '⇥' : '⇤'}</button>
       </div>

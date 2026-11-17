@@ -20,6 +20,9 @@ export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec;
 export class SessionManager extends EventEmitter {
   private readonly live = new Map<string, { handle: RunHandle; timer: NodeJS.Timeout; stopReason?: SessionStatus }>();
   lastRateLimit: any = null;
+  /** When lastRateLimit was reported (ISO). */
+  lastRateLimitAt: string | null = null;
+  private probing: Promise<unknown> | null = null;
   /** Epoch ms until which no session starts (subscription limit hit). Owner policy: wait, never downgrade the model. */
   rateLimitedUntil = 0;
   private resumeTimer: NodeJS.Timeout | null = null;
@@ -34,6 +37,37 @@ export class SessionManager extends EventEmitter {
     // Crash recovery: processes from a previous server run are gone; queued sessions stay queued.
     const r = db.prepare("UPDATE sessions SET status = 'interrupted', ended_at = datetime('now') WHERE status IN ('starting','running')").run();
     if (r.changes) audit(db, 'system', 'session.recover', null, { interrupted: Number(r.changes) });
+    // Last usage report survives restarts (kv), falling back to the newest one recorded in a session.
+    const kv = db.prepare("SELECT value, updated_at FROM kv WHERE key = 'claude.rateLimit'").get() as { value: string; updated_at: string } | undefined;
+    const ev = db.prepare("SELECT data, created_at FROM session_events WHERE kind = 'rate_limit' ORDER BY id DESC LIMIT 1").get() as { data: string; created_at: string } | undefined;
+    if (kv && (!ev || kv.updated_at >= ev.created_at)) { this.lastRateLimit = JSON.parse(kv.value); this.lastRateLimitAt = kv.updated_at; }
+    else if (ev) { this.lastRateLimit = JSON.parse(ev.data).info ?? null; this.lastRateLimitAt = ev.created_at; }
+  }
+
+  /** Record a usage report from Claude (any session or a probe): memory + kv, limit check, notify. */
+  noteRateLimit(info: any) {
+    if (!info) return;
+    this.lastRateLimit = info;
+    this.lastRateLimitAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    this.db.prepare("INSERT INTO kv (key, value, updated_at) VALUES ('claude.rateLimit', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+      .run(JSON.stringify(info), this.lastRateLimitAt);
+    if (info.status && info.status !== 'allowed' && info.resetsAt) this.markLimited(info.resetsAt * 1000);
+    this.emit('rateLimit', info);
+  }
+
+  /**
+   * Ask Claude for a fresh usage report without a task: one haiku turn, no tools, no MCP (a few thousand tokens).
+   * Claude Code only reports usage inside a run, so this is the only way to read it on demand.
+   */
+  probeUsage(cwd: string): Promise<unknown> {
+    if (this.probing) return this.probing;
+    let got: unknown = null;
+    const h = this.adapter.start({ prompt: 'Reply with: ok', cwd, model: 'haiku', tools: [], maxTurns: 1 }, (e) => {
+      if (e.kind === 'rate_limit') { got = e.info; this.noteRateLimit(e.info); }
+    });
+    const timer = setTimeout(() => h.stop(), 90_000);
+    this.probing = h.done.then(() => { clearTimeout(timer); this.probing = null; return got; });
+    return this.probing;
   }
 
   get runningCount() { return this.live.size; }
@@ -68,10 +102,7 @@ export class SessionManager extends EventEmitter {
         this.db.prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ?').run(e.claudeSessionId, id);
         this.setStatus(id, 'running');
       } else if (e.kind === 'rate_limit') {
-        this.lastRateLimit = e.info;
-        const info = e.info as { status?: string; resetsAt?: number } | null;
-        if (info && info.status && info.status !== 'allowed' && info.resetsAt) this.markLimited(info.resetsAt * 1000);
-        this.emit('rateLimit', e.info);
+        this.noteRateLimit(e.info);
       } else if (e.kind === 'result') {
         this.db.prepare(`UPDATE sessions SET result_text = ?, claude_session_id = ?, cost_usd_estimate = ?, input_tokens = ?, output_tokens = ?, num_turns = ? WHERE id = ?`)
           .run(e.text, e.claudeSessionId, e.costUsdEstimate, e.inputTokens, e.outputTokens, e.numTurns, id);

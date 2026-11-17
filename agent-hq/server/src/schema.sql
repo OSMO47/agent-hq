@@ -1,6 +1,13 @@
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
+-- Small internal state that must survive restarts (not owner policy), e.g. last Claude usage report.
+CREATE TABLE IF NOT EXISTS kv (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,              -- JSON
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS policies (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,              -- JSON

@@ -132,3 +132,19 @@ test('owner policy: every seeded agent runs on opus', () => {
   const { db } = setup();
   assert.deepEqual(db.prepare("SELECT DISTINCT model FROM agents").all().map((r: any) => r.model), ['opus']);
 });
+
+test('usage probe: one tool-less haiku turn; report persists across restart', async () => {
+  const { db, ad, sm } = setup();
+  const info = { status: 'allowed', resetsAt: 1, unifiedWindows: { five_hour: { utilization: 0.11, resetsAt: 1, status: 'allowed' } } };
+  const p = sm.probeUsage('.');
+  assert.equal(sm.probeUsage('.'), p, 'concurrent probes share one run');
+  const run = ad.runs[0];
+  assert.equal(run.spec.model, 'haiku');
+  assert.deepEqual(run.spec.tools, []);
+  run.emit({ kind: 'rate_limit', info });
+  run.exit(0);
+  assert.deepEqual(await p, info);
+  const sm2 = new SessionManager(db, new ScriptedAdapter()); // simulated restart
+  assert.deepEqual(sm2.lastRateLimit, info);
+  assert.ok(sm2.lastRateLimitAt);
+});

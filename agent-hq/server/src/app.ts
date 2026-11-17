@@ -65,7 +65,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
       pendingApprovals: (one("SELECT COUNT(*) n FROM approvals WHERE status='pending'") as any).n,
       pendingRecruitment: (one("SELECT COUNT(*) n FROM recruitment_requests WHERE status IN ('pending_ceo','pending_owner')") as any).n,
       system: { cpuCount: cpus.length, cpuPercent, gpu: null, cpuModel: cpus[0]?.model, totalMem: os.totalmem(), freeMem: os.freemem(), uptime: os.uptime() },
-      claude: { lastRateLimit: sm.lastRateLimit, rateLimitedUntil: sm.rateLimitedUntil || null,
+      claude: { lastRateLimit: sm.lastRateLimit, lastRateLimitAt: sm.lastRateLimitAt, rateLimitedUntil: sm.rateLimitedUntil || null,
         costEstimateTodayUsd: (one("SELECT SUM(cost_usd_estimate) c FROM sessions WHERE queued_at > datetime('now','start of day')") as any).c },
       paused: getPolicy(db, 'org.paused', false),
       recentActivity: all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 30'),
@@ -213,6 +213,8 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   }));
 
   // ---------- Owner command center ----------
+  /** Fresh Claude usage on demand (one tiny haiku turn). */
+  app.post('/api/owner/check-usage', h(async () => ({ info: await sm.probeUsage(opts.dataDir) })));
   app.post('/api/owner/stop-all', h(() => ({ stopped: sm.stopAll(OWNER) })));
   app.post('/api/owner/pause', h((req) => {
     const paused = !!req.body?.paused;
@@ -256,6 +258,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   }
   sm.on('event', (sessionId: string, event: unknown) => broadcast({ type: 'session.event', sessionId, event }));
   sm.on('status', (sessionId: string, status: string) => broadcast({ type: 'session.status', sessionId, status }));
+  sm.on('rateLimit', () => broadcast({ type: 'usage' }));
   sm.on('limited', (until: number) => broadcast({ type: 'limited', until }));
 
   return { app, server, wss, broadcast, runner };

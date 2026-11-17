@@ -21,6 +21,8 @@ const { server } = createHq(db, sm, { dataDir, port, staticDir: existsSync(stati
 server.listen(port, host, () => {
   console.log(`[hq] Agent HQ on http://${host}:${port}  (data: ${dataDir})`);
   sm.pump(); // resume any queue left from a previous run
+  // No usage report ever seen (fresh install): fetch one so the dashboard meter is not empty.
+  if (!sm.lastRateLimit && process.env.HQ_NO_USAGE_PROBE !== '1') sm.probeUsage(dataDir).catch(() => {});
 });
 
 const shutdown = () => { console.log('[hq] stopping all sessions'); sm.stopAll('system'); setTimeout(() => process.exit(0), 500); };

@@ -1,5 +1,6 @@
 import { Tile, Section, Empty, Meter } from '../ui';
-import { ago } from '../api';
+import { ago, api } from '../api';
+import { useState } from 'react';
 
 const gb = (b: number) => (b / 1024 ** 3).toFixed(1);
 
@@ -18,6 +19,9 @@ function Window({ name, w }: { name: string; w?: { utilization: number; resetsAt
 }
 
 export default function Overview({ overview: o }: { overview: any }) {
+  const [checking, setChecking] = useState(false);
+  const [err, setErr] = useState('');
+  const check = async () => { setChecking(true); setErr(''); try { await api('POST', '/api/owner/check-usage'); } catch (e) { setErr((e as Error).message); } setChecking(false); };
   if (!o) return <Empty>Loading…</Empty>;
   const t = o.tasks ?? {};
   const s = o.sessions ?? {};
@@ -39,15 +43,16 @@ export default function Overview({ overview: o }: { overview: any }) {
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_1fr_1.4fr]">
-        <Section title="Claude usage">
+        <Section title="Claude usage" right={<button className="btn h-6 text-[11px]" onClick={check} disabled={checking}>{checking ? 'Checking…' : '↻ Check now'}</button>}>
           <div className="space-y-4 p-4">
             {rl ? (
               <>
                 <Window name="5-hour window" w={windows.five_hour} />
                 <Window name="7-day window" w={windows.seven_day} />
-                <div className="text-[11.5px] text-faint">Reported by Claude Code with each run · last update from the most recent session.</div>
+                <div className="text-[11.5px] text-faint">Reported by Claude Code · updated {ago(o.claude.lastRateLimitAt)}. Refreshes on every run; ↻ Check now costs one tiny haiku turn.</div>
               </>
-            ) : <div className="text-[12px] text-faint">No data yet — usage is reported by Claude Code once a session runs. Nothing is estimated.</div>}
+            ) : <div className="text-[12px] text-faint">No report yet. Claude Code reports usage only during a run: press ↻ Check now (one tiny haiku turn). Nothing is estimated.</div>}
+            {err && <div className="text-[11.5px] text-shu">{err}</div>}
             <div className="flex items-baseline justify-between border-t border-line pt-3 text-[12px]">
               <span className="text-dim">API-equivalent estimate today</span>
               <span className="font-mono">{o.claude.costEstimateTodayUsd != null ? `$${o.claude.costEstimateTodayUsd.toFixed(2)}` : '—'}</span>
