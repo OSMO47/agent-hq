@@ -37,6 +37,27 @@ export function finishedProjects(db: DB) {
   }));
 }
 
+/**
+ * What the shell actually runs.
+ *  - A script that lives in the project folder (`deploy.bat`) is called as `.\deploy.bat`: with
+ *    NoDefaultCurrentDirectoryInExePath set (Claude Code sets it; child processes inherit it) cmd.exe will not
+ *    look in the current folder otherwise.
+ *  - On Windows the console is switched to UTF-8 first, so output is readable on any system code page (e.g. 932).
+ */
+export function shellCommand(command: string, dir: string, platform = process.platform): string {
+  const m = /^\s*("?)([^"\s]+)\1(.*)$/s.exec(command);
+  let cmd = command;
+  if (m && !/[\\/:]/.test(m[2]) && existsSync(join(dir, m[2]))) cmd = `${platform === 'win32' ? '.\\' : './'}${m[2]}${m[3]}`;
+  return platform === 'win32' ? `chcp 65001>nul & ${cmd}` : cmd;
+}
+
+/** Child env: as the server's, minus the switch that hides scripts in the working folder. */
+export function deployEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of Object.keys(out)) if (k.toLowerCase() === 'nodefaultcurrentdirectoryinexepath') delete out[k];
+  return out;
+}
+
 export interface DeployState { running: boolean; ok: boolean | null; command: string; output: string; startedAt: string; endedAt: string | null }
 
 /** Runs owner-approved deploys (one at a time per project). Agents have no route to this. Emits 'change' (projectId). */
@@ -84,7 +105,7 @@ export class Deployer extends EventEmitter {
 
     log(`$ ${command}\n`);
     // Owner-typed command, run in the project folder. stdin closed so scripts that `pause` do not hang.
-    const child = spawn(command, { cwd: p.repo_path, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(shellCommand(command, p.repo_path), { cwd: p.repo_path, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: deployEnv() });
     child.stdout.setEncoding('utf8').on('data', log);
     child.stderr.setEncoding('utf8').on('data', log);
     const timer = setTimeout(() => { log('\n[timeout after 15 min: stopped]\n'); if (child.pid) killTree(child.pid); }, 15 * 60_000);
