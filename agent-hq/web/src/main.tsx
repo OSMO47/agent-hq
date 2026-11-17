@@ -241,7 +241,7 @@ function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight
         {ov?.claude?.costEstimateTodayUsd != null && <span className="pill text-matcha" title="API-equivalent estimate today; not a bill">${ov.claude.costEstimateTodayUsd.toFixed(2)}</span>}
         <button className="w-28 text-left" onClick={check} disabled={checking}
           title={five ? `Claude 5-hour window: ${pct}% · updated ${ago(ov?.claude?.lastRateLimitAt)} · click to refresh` : 'Click to ask Claude for current usage'}>
-          <div className="mb-1 text-[9.5px] font-bold tracking-wider text-dim">CLAUDE 5H <span className="font-normal text-faint">{checking ? 'checking…' : pct != null ? `${pct}%` : 'click to check'}</span></div>
+          <div className="mb-1 whitespace-nowrap text-[9.5px] font-bold tracking-wider text-dim">CLAUDE 5H <span className="font-normal text-faint">{checking ? 'checking…' : pct != null ? `${pct}%` : 'check'}</span></div>
           <div className="h-1 overflow-hidden rounded-full bg-line">
             <div className={`h-full rounded-full ${pct == null ? '' : pct >= 90 ? 'bg-shu' : pct >= 70 ? 'bg-kin' : 'bg-matcha'} ${checking ? 'breathe' : ''}`} style={{ width: `${pct ?? 0}%` }} />
           </div>

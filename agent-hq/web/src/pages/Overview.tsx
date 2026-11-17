@@ -1,6 +1,7 @@
 import { Tile, Section, Empty, Meter } from '../ui';
 import { ago, api } from '../api';
 import { useState } from 'react';
+import { TeamTerminals } from '../Terminals';
 
 const gb = (b: number) => (b / 1024 ** 3).toFixed(1);
 
@@ -42,7 +43,9 @@ export default function Overview({ overview: o }: { overview: any }) {
         <Tile label="Recruitment" value={o.pendingRecruitment} sub="requests pending" />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_1fr_1.4fr]">
+      <TeamTerminals />
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_1fr_1.4fr]">
         <Section title="Claude usage" right={<button className="btn h-6 text-[11px]" onClick={check} disabled={checking}>{checking ? 'Checking…' : '↻ Check now'}</button>}>
           <div className="space-y-4 p-4">
             {rl ? (
