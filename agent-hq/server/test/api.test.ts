@@ -259,3 +259,25 @@ test('unreadable plan creates nothing and reports back', async () => {
   assert.equal((await api('GET', `/api/tasks?projectId=${p.id}`)).body.tasks.length, 0);
   assert.match((await api('GET', `/api/projects/${p.id}/status`)).body.messages[0].body, /could not produce a readable plan/);
 });
+
+test('delete project: refuses while a session is live; then removes tasks + sessions, keeps files', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'Throwaway' })).body;
+  const a = (await api('POST', '/api/tasks', { projectId: p.id, title: 'A', assigneeId: 'backend-developer', difficulty: 'easy' })).body;
+  const b = (await api('POST', '/api/tasks', { projectId: p.id, title: 'B', dependsOn: [a.id] })).body;
+  await api('POST', `/api/tasks/${a.id}/comments`, { body: 'note' });
+  await api('POST', `/api/tasks/${a.id}/run`);
+  await tick();
+  assert.equal((await api('GET', `/api/projects/${p.id}/footprint`)).body.liveSessions, 1);
+  assert.equal((await api('DELETE', `/api/projects/${p.id}`)).status, 400, 'live session blocks delete');
+
+  ad.runs.at(-1)!.exit(null); // session ends
+  await tick();
+  const f = (await api('GET', `/api/projects/${p.id}/footprint`)).body;
+  assert.equal(f.tasks, 2); assert.equal(f.liveSessions, 0);
+  const r = await api('DELETE', `/api/projects/${p.id}`);
+  assert.equal(r.status, 200);
+  assert.equal((await api('GET', `/api/tasks/${b.id}`)).status, 400);
+  assert.ok(!(await api('GET', '/api/projects')).body.some((x: any) => x.id === p.id));
+  assert.equal(Number((db.prepare('SELECT count(*) n FROM sessions WHERE task_id = ?').get(a.id) as any).n), 0);
+  assert.equal(Number((db.prepare('SELECT count(*) n FROM task_comments WHERE task_id = ?').get(a.id) as any).n), 0);
+});

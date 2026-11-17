@@ -51,7 +51,7 @@ export default function Tasks({ param }: { param?: string }) {
     else if (param) api('GET', `/api/tasks/${param}`).then((r) => { setPid(r.task.project_id); setOpenId(param); }).catch(() => {});
   }, [param]);
   const clearLink = () => { if (param) location.hash = '#/tasks'; };
-  const [creating, setCreating] = useState<'project' | 'task' | 'brief' | null>(null);
+  const [creating, setCreating] = useState<'project' | 'task' | 'brief' | 'delete' | null>(null);
   const pstat = useResource<any>(pid ? `/api/projects/${pid}/status` : null, ['project', 'task', 'session.status', 'paused']);
   const [runMsg, setRunMsg] = useState('');
 
@@ -75,6 +75,8 @@ export default function Tasks({ param }: { param?: string }) {
           {projects.data.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <button className="btn" onClick={() => setCreating('project')}>New project</button>
+        <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from Agent HQ">🗑 Delete</button>
+        <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from Agent HQ">🗑 Delete</button>
         <div className="ml-auto flex items-center gap-3 text-[11.5px] text-faint">
           {SIDE.map((s) => <span key={s} className="whitespace-nowrap"><Status s={s} /> {all.filter((t) => t.status === s).length}</span>)}
           {pstat.data?.planning && <a className="flex items-center gap-1.5 text-kin" href={`#/sessions/${pstat.data.planning.id}`}><Dot status="running" />CEO planning…</a>}
@@ -119,11 +121,43 @@ export default function Tasks({ param }: { param?: string }) {
         })}
       </div>
 
+      {creating === 'delete' && pid && <DeleteProject id={pid} onDone={(deleted) => { setCreating(null); if (deleted) { setPid(null); projects.reload(); } }} />}
       {creating === 'project' && <NewProject onDone={(id) => { setCreating(null); projects.reload(); if (id) setPid(id); }} />}
       {creating === 'brief' && pid && <CeoBrief status={pstat.data} reload={pstat.reload} projectId={pid} onClose={() => { setCreating(null); clearLink(); }} />}
       {creating === 'task' && pid && <NewTask projectId={pid} agents={agents} tasks={all} onDone={() => { setCreating(null); tasks.reload(); clearLink(); }} />}
       {openId && <TaskDrawer id={openId} agents={agents} allTasks={all} onClose={() => { setOpenId(null); clearLink(); }} onChange={tasks.reload} />}
     </div>
+  );
+}
+
+/** Confirm panel: shows exactly what is removed; the workspace folder on disk is never touched. */
+function DeleteProject({ id, onDone }: { id: string; onDone: (deleted: boolean) => void }) {
+  const { data, error } = useResource<any>(`/api/projects/${id}/footprint`, []);
+  const [typed, setTyped] = useState(''); const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const name = data?.project.name ?? '';
+  return (
+    <Drawer open onClose={() => onDone(false)} title="Delete project">
+      {!data ? <Empty>{error ?? 'Loading…'}</Empty> : (
+        <div className="space-y-4">
+          <div className="text-[13px]">{name}</div>
+          <div className="rounded-md border border-shu/40 p-3 text-[12px] leading-relaxed">
+            Removes from Agent HQ: <span className="text-shu">{data.tasks} task(s)</span> with their comments and history,
+            and <span className="text-shu">{data.sessions} session(s)</span> with their transcripts. This cannot be undone.
+          </div>
+          <div className="rounded-md border border-matcha/30 p-3 text-[12px] leading-relaxed text-matcha">
+            Files are not touched: <span className="break-all font-mono text-[11px]">{data.project.repo_path ?? 'agent-hq/data/workspaces/' + id}</span> stays exactly as it is.
+          </div>
+          {data.liveSessions > 0 && <div className="text-[12px] text-kin">{data.liveSessions} session(s) of this project are running or queued. Stop them first.</div>}
+          <label className="block space-y-1"><span className="label">Type the project name to confirm</span>
+            <input className="field" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={name} autoFocus /></label>
+          {err && <div className="text-[12px] text-shu">{err}</div>}
+          <button className="btn btn-danger" disabled={busy || typed.trim() !== name.trim() || data.liveSessions > 0}
+            onClick={async () => { setBusy(true); setErr(''); try { await api('DELETE', `/api/projects/${id}`); onDone(true); } catch (x) { setErr((x as Error).message); setBusy(false); } }}>
+            Delete project
+          </button>
+        </div>
+      )}
+    </Drawer>
   );
 }
 

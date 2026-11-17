@@ -8,6 +8,7 @@ import type { SessionManager } from './runtime/sessionManager.ts';
 import { TaskRunner, buildSpec, projectWorkspace } from './domain/taskRunner.ts';
 import { readyTasks } from './domain/tasks.ts';
 import { CeoPlanner, gitDirty } from './domain/ceoPlanner.ts';
+import { deleteProject, projectFootprint } from './domain/projects.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
@@ -105,6 +106,13 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     db.prepare('INSERT INTO projects (id, name, description, repo_path) VALUES (?, ?, ?, ?)').run(id, name, description, repoPath);
     audit(db, OWNER, 'project.create', id, { name });
     return one('SELECT * FROM projects WHERE id = ?', id);
+  }));
+  app.get('/api/projects/:id/footprint', h((req) => projectFootprint(db, req.params.id as string)));
+  /** Removes the project from Agent HQ only; the workspace folder on disk is left untouched. */
+  app.delete('/api/projects/:id', h((req) => {
+    const out = deleteProject(db, req.params.id as string, OWNER);
+    broadcast({ type: 'project' }); broadcast({ type: 'task' });
+    return out;
   }));
   /** Everything the board needs about a project besides its tasks: workspace, git safety, CEO activity. */
   app.get('/api/projects/:id/status', h((req) => {
