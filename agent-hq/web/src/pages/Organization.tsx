@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, useResource, MODELS } from '../api';
 import { Dot, Drawer, Empty, Kv, Status } from '../ui';
 
@@ -30,6 +30,8 @@ export default function Organization({ param }: { param?: string }) {
   const { data, reload } = useResource<{ departments: any[]; agents: Agent[] }>('/api/org', ['session.status', 'org']);
   const [sel, setSel] = useState<Agent | null>(param ? ({ id: param } as Agent) : null);
   const [err, setErr] = useState<string | null>(null);
+  // #/org/<agentId> (e.g. the header 'profile' link) opens that agent, every time the link changes.
+  useEffect(() => { setSel(param ? ({ id: param } as Agent) : null); }, [param]);
   if (!data) return <Empty>Loading…</Empty>;
 
   const ceo = data.agents.find((a) => a.level === 1);
@@ -48,7 +50,7 @@ export default function Organization({ param }: { param?: string }) {
         <div className="mx-auto mb-2 w-72"><AgentChip a={ceo} onOpen={setSel} big /></div>
       )}
       <div className="mx-auto h-5 w-px bg-line-strong" />
-      <div className="relative grid grid-cols-2 gap-3 border-t border-line-strong pt-5 lg:grid-cols-3 2xl:grid-cols-6">
+      <div className="relative grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-3 border-t border-line-strong pt-5">
         {data.departments.map((d) => {
           const leader = byId[d.leader_id];
           const team = data.agents.filter((a) => a.level === 3 && a.department_id === d.id);
@@ -69,7 +71,7 @@ export default function Organization({ param }: { param?: string }) {
         })}
       </div>
 
-      <Drawer open={!!current} onClose={() => { setSel(null); setErr(null); }}
+      <Drawer open={!!current} onClose={() => { setSel(null); setErr(null); if (param) location.hash = '#/org'; }}
         title={current && <span className="flex items-center gap-2"><Dot status={agentState(current)} />{current.name}<span className="text-dim">· {current.role}</span></span>}>
         {current && (() => {
           const perm = JSON.parse(current.permissions || '{}');

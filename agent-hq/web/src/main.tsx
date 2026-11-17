@@ -174,8 +174,9 @@ function Menu({ page, theme, setTheme, paused, reloadOv, onToast, onClose }:
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     const c = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
-    addEventListener('keydown', k); setTimeout(() => addEventListener('mousedown', c));
-    return () => { removeEventListener('keydown', k); removeEventListener('mousedown', c); };
+    addEventListener('keydown', k);
+    const t = setTimeout(() => addEventListener('mousedown', c)); // after the click that opened the menu
+    return () => { clearTimeout(t); removeEventListener('keydown', k); removeEventListener('mousedown', c); };
   }, [onClose]);
   return (
     <div ref={ref} className="rise absolute left-3 right-3 top-14 z-40 rounded-lg border border-line-strong bg-raise p-1.5 shadow-2xl">
