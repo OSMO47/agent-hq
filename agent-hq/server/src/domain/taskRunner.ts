@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { type DB, newId, audit, getPolicy } from '../db.ts';
-import { claimTask, transition, getTask, TaskError, type Task, type Difficulty, DIFFICULTIES } from './tasks.ts';
+import { claimTask, transition, getTask, readyTasks, TaskError, type Task, type Difficulty, DIFFICULTIES } from './tasks.ts';
 import type { SessionManager, SessionStatus } from '../runtime/sessionManager.ts';
 import type { RunSpec } from '../runtime/types.ts';
 
@@ -52,6 +52,31 @@ export function buildSpec(agent: AgentRow, prompt: string, cwd: string, maxTurns
   };
 }
 
+/** Autopilot accepts finished work automatically; agents flag what really needs the owner. */
+export const OWNER_HINT = 'Your work is accepted automatically unless you flag it. If you have a proposal or opinion beyond the task, need the owner to decide something, or the result should be checked by the owner before it counts as done, make the LAST line of your reply exactly:\nNEEDS_OWNER: <what the owner should decide or approve>';
+export const ownerAsk = (text: string | null) => {
+  const m = [...(text ?? '').matchAll(/^\s*NEEDS_OWNER:\s*(.+)$/gim)].map((x) => x[1].trim());
+  return m.length ? m.join('\n') : null;
+};
+const PUBLISH_CMD = /git push|firebase|deploy|vercel|netlify|^\s*gh\s/i;
+
+function dispatchPrompt(db: DB, t: Task): string {
+  const roster = db.prepare(`SELECT a.id, a.role, a.level, d.name dept FROM agents a LEFT JOIN departments d ON d.id = a.department_id
+                             WHERE a.status = 'active' AND a.level > 1 ORDER BY a.level, a.rowid`).all() as any[];
+  return ['You are dispatching one task to the best-suited member of your organization.',
+    `# Task: ${t.title}`, t.description || '(no description)', '', '## Organization (pick by id)',
+    ...roster.map((a) => `- ${a.id}: ${a.role} (${a.dept ?? 'Executive'}${a.level === 2 ? ', leader' : ''})`),
+    '', 'Prefer a specialist over a leader. Visual design / UX / UI work goes to ui-ux-designer.',
+    'Reply with ONLY one JSON object, no prose: {"assignee":"<agent id>","reason":"<one sentence>"}'].join('\n');
+}
+
+export function parseDispatch(text: string): { assignee: string; reason: string } | null {
+  const m = text.match(/\{[^{}]*"assignee"\s*:\s*"([^"]+)"[^{}]*\}/);
+  if (!m) return null;
+  try { const o = JSON.parse(m[0]); return { assignee: String(o.assignee), reason: String(o.reason ?? '') }; }
+  catch { return { assignee: m[1], reason: '' }; }
+}
+
 const ESCALATE_HINT = 'If this task turns out to be clearly harder than expected for you, stop early and make the LAST line of your reply exactly:\nESCALATE: <one-sentence reason>\nThe task will continue on a stronger model with this conversation.';
 
 function taskPrompt(db: DB, taskId: string, canEscalate: boolean): string {
@@ -60,6 +85,7 @@ function taskPrompt(db: DB, taskId: string, canEscalate: boolean): string {
   return [`# Task: ${t.title}`, t.description,
     comments.length ? `## Notes\n${comments.map((c) => `- ${c.author}: ${c.body}`).join('\n')}` : '',
     'When finished, reply with a short report: what you did, files changed, open issues.',
+    OWNER_HINT,
     canEscalate ? ESCALATE_HINT : ''].filter(Boolean).join('\n\n');
 }
 
@@ -96,8 +122,56 @@ export class TaskRunner {
 
   constructor(db: DB, sm: SessionManager, dataDir: string) {
     this.db = db; this.sm = sm; this.dataDir = dataDir;
-    sm.on('status', (sessionId: string, status: SessionStatus) => this.onSessionStatus(sessionId, status));
+    sm.on('status', (sessionId: string, status: SessionStatus) => {
+      this.onSessionStatus(sessionId, status);
+      if (['completed', 'failed', 'timeout', 'stopped', 'interrupted'].includes(status)) setImmediate(() => this.autoPilot());
+    });
     this.recoverOrphans();
+  }
+
+  private piloting = false;
+  /**
+   * Autopilot (policy org.autoPilot, default on): the CEO assigns unassigned tasks, and every ready task starts.
+   * Idempotent and cheap; called after any change. Respects pause; concurrency is enforced by the session queue.
+   */
+  autoPilot() {
+    if (this.piloting || !getPolicy(this.db, 'org.autoPilot', true) || getPolicy(this.db, 'org.paused', false)) return;
+    this.piloting = true;
+    try {
+      const unassigned = this.db.prepare(`SELECT t.* FROM tasks t WHERE t.assignee_id IS NULL AND t.status IN ('BACKLOG','PLANNED')
+          AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch' AND s.status IN ('queued','starting','running'))
+          AND (SELECT COUNT(*) FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch') < 2`).all() as unknown as Task[];
+      for (const t of unassigned) this.startDispatch(t);
+      for (const t of readyTasks(this.db)) { try { this.run(t.id, 'autopilot'); } catch { /* e.g. suspended agent: stays on the board */ } }
+    } finally { this.piloting = false; }
+  }
+
+  private startDispatch(t: Task) {
+    const ceo = this.agent('ceo');
+    if (ceo.status !== 'active') return;
+    const spec: RunSpec = { ...buildSpec(ceo, dispatchPrompt(this.db, t), projectWorkspace(this.db, this.dataDir, t.project_id), 1),
+      model: getPolicy(this.db, 'models.assessment', 'sonnet'), tools: [], allowedTools: [], disallowedTools: [] };
+    this.sm.enqueue({ agentId: 'ceo', taskId: t.id, actor: 'autopilot', spec, purpose: 'dispatch' });
+  }
+
+  private afterDispatch(taskId: string, s: { agent_id: string; result_text: string | null }, status: SessionStatus) {
+    const t = getTask(this.db, taskId);
+    if (!t || t.assignee_id || !['BACKLOG', 'PLANNED'].includes(t.status)) return;
+    const d = status === 'completed' ? parseDispatch(s.result_text ?? '') : null;
+    const a = d ? this.db.prepare("SELECT * FROM agents WHERE id = ? AND status = 'active' AND level > 1").get(d.assignee) as AgentRow | undefined : undefined;
+    if (!a) { this.comment(t.id, 'ceo', `Could not pick an assignee (${status}). Please choose one.`); return; }
+    this.db.prepare('UPDATE tasks SET assignee_id = ? WHERE id = ?').run(a.id, t.id);
+    transition(this.db, t.id, 'ASSIGNED', 'ceo', `assigned to ${a.id}`);
+    this.comment(t.id, 'ceo', `Assigned to ${a.role}. ${d!.reason}`);
+    audit(this.db, 'ceo', 'task.dispatch', t.id, { assignee: a.id });
+  }
+
+  /** Denied tool calls other than the (expected) publish block: these need the owner. */
+  private unexpectedDenials(sessionId: string): string[] {
+    const r = this.db.prepare("SELECT data FROM session_events WHERE session_id = ? AND kind = 'result' ORDER BY id DESC LIMIT 1").get(sessionId) as { data: string } | undefined;
+    const list = (r ? JSON.parse(r.data).permissionDenials ?? [] : []) as { tool: string; input: any }[];
+    return list.filter((p) => !(p.tool === 'Bash' && PUBLISH_CMD.test(String(p.input?.command ?? ''))))
+      .map((p) => `${p.tool} ${String(p.input?.command ?? p.input?.file_path ?? '').slice(0, 120)}`);
   }
 
   private agent(id: string) { return this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as unknown as AgentRow; }
@@ -166,6 +240,10 @@ export class TaskRunner {
   private onSessionStatus(sessionId: string, status: SessionStatus) {
     const s = this.sm.get(sessionId);
     if (!s?.task_id) return;
+    if (s.purpose === 'dispatch') {
+      if (['completed', 'failed', 'timeout', 'stopped', 'interrupted'].includes(status)) this.afterDispatch(s.task_id, s, status);
+      return;
+    }
     const t = getTask(this.db, s.task_id);
     if (!t || t.status !== 'RUNNING' || t.lock_session !== sessionId) return;
     if (!['completed', 'failed', 'timeout', 'stopped', 'interrupted'].includes(status)) return;
@@ -191,8 +269,17 @@ export class TaskRunner {
 
     if (status === 'completed') {
       transition(this.db, t.id, 'REVIEW', 'system', `session ${sessionId} completed`);
-      this.db.prepare("UPDATE tasks SET review_status = 'pending' WHERE id = ?").run(t.id);
       if (s.result_text) this.comment(t.id, s.agent_id, s.result_text);
+      const ask = ownerAsk(s.result_text);
+      const denied = this.unexpectedDenials(sessionId);
+      if (getPolicy(this.db, 'org.autoPilot', true) && !ask && denied.length === 0) {
+        this.db.prepare("UPDATE tasks SET review_status = 'approved' WHERE id = ?").run(t.id);
+        transition(this.db, t.id, 'DONE', 'autopilot', 'no owner decision needed');
+      } else {
+        this.db.prepare("UPDATE tasks SET review_status = 'pending' WHERE id = ?").run(t.id);
+        const why = [ask, denied.length ? `Blocked tools: ${denied.join(' · ')}` : null].filter(Boolean).join('\n');
+        if (why) this.comment(t.id, 'system', `Needs your decision:\n${why}`);
+      }
     } else {
       transition(this.db, t.id, 'FAILED', 'system', `session ${sessionId} ${status}`);
     }

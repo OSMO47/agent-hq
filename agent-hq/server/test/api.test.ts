@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDb } from '../src/db.ts';
+import { openDb, setPolicy } from '../src/db.ts';
 import { seed } from '../src/seed.ts';
 import { SessionManager } from '../src/runtime/sessionManager.ts';
 import { createHq } from '../src/app.ts';
@@ -12,6 +12,7 @@ import { ScriptedAdapter, tick } from './helpers.ts';
 const port = 4399;
 const db = openDb(':memory:');
 seed(db);
+setPolicy(db, 'org.autoPilot', false, 'test'); // these tests drive the manual flow; autopilot has its own tests
 const ad = new ScriptedAdapter();
 const sm = new SessionManager(db, ad);
 const { server } = createHq(db, sm, { dataDir: mkdtempSync(join(tmpdir(), 'hq-')), port });

@@ -237,7 +237,6 @@ function CeoBrief({ projectId, status, reload, onClose }: { projectId: string; s
 
 function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agents: any[]; tasks: any[]; onDone: () => void }) {
   const [f, setF] = useState({ title: '', description: '', assigneeId: '', priority: 2, difficulty: '', dependsOn: [] as string[] });
-  const [startNow, setStartNow] = useState(true);
   const modelFor = useModelFor(agents);
   const assignee = agents.find((a) => a.id === f.assigneeId);
   const fixed = assignee?.model_mode === 'fixed';
@@ -246,17 +245,15 @@ function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agen
     <Drawer open onClose={onDone} title="New task">
       <form className="space-y-3" onSubmit={async (e) => {
         e.preventDefault();
-        if (startNow && !f.assigneeId) { setErr('Pick an assignee to start right away (or untick "Start right away", or use Brief CEO to let the CEO decide).'); return; }
         try {
-          const t = await api('POST', '/api/tasks', { projectId, ...f, assigneeId: f.assigneeId || undefined, difficulty: f.difficulty || undefined });
-          if (startNow) await api('POST', `/api/tasks/${t.id}/run`);
+          await api('POST', '/api/tasks', { projectId, ...f, assigneeId: f.assigneeId || undefined, difficulty: f.difficulty || undefined });
           onDone();
         } catch (x) { setErr((x as Error).message); }
       }}>
         <label className="block space-y-1"><span className="label">Title</span><input className="field" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} autoFocus required /></label>
         <label className="block space-y-1"><span className="label">Instructions for the agent</span><textarea className="field" rows={6} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="block space-y-1"><span className="label">Assignee</span><AgentSelect agents={agents} value={f.assigneeId} onChange={(v) => setF({ ...f, assigneeId: v })} /></label>
+          <label className="block space-y-1"><span className="label">Assignee</span><AgentSelect agents={agents} value={f.assigneeId} emptyLabel="Auto: CEO decides" onChange={(v) => setF({ ...f, assigneeId: v })} /></label>
           <label className="block space-y-1"><span className="label">Priority</span>
             <select className="field" value={f.priority} onChange={(e) => setF({ ...f, priority: Number(e.target.value) })}>{PRIO.map((p, i) => <option key={p} value={i}>{p}</option>)}</select></label>
         </div>
@@ -283,18 +280,17 @@ function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agen
             {tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
           </select></label>}
         {err && <div className="text-[12px] text-shu">{err}</div>}
-        <label className="flex items-center gap-2 text-[12px]"><input type="checkbox" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} />Start right away <span className="text-faint">(otherwise it waits on the board until you press ▶ Run)</span></label>
-        <div className="text-[11px] text-faint">Agents work on local files only: deploy and git push are blocked.</div>
-        <button className="btn btn-primary">{startNow ? 'Create & start' : 'Create task'}</button>
+        <div className="rounded-md border border-matcha/30 px-3 py-2 text-[11.5px] leading-relaxed text-matcha">✈ Autopilot: leave Assignee on Auto and the CEO picks who does it. Work starts by itself and routine results are approved automatically. You are asked only when an agent needs your decision (Inbox). Local files only: deploy and git push are blocked.</div>
+        <button className="btn btn-primary">Create task</button>
       </form>
     </Drawer>
   );
 }
 
-function AgentSelect({ agents, value, onChange }: { agents: any[]; value: string; onChange: (v: string) => void }) {
+function AgentSelect({ agents, value, onChange, emptyLabel = 'Unassigned' }: { agents: any[]; value: string; onChange: (v: string) => void; emptyLabel?: string }) {
   return (
     <select className="field" value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">Unassigned</option>
+      <option value="">{emptyLabel}</option>
       {[1, 2, 3].map((lvl) => (
         <optgroup key={lvl} label={['', 'Executive', 'Leaders', 'Specialists'][lvl]}>
           {agents.filter((a) => a.level === lvl && a.status === 'active').map((a) => <option key={a.id} value={a.id}>{a.level === 3 ? a.role : `${a.name} · ${a.role}`}</option>)}
@@ -337,7 +333,7 @@ function TaskDrawer({ id, agents, allTasks, onClose, onChange }: { id: string; a
           {t.description && <p className="whitespace-pre-wrap rounded-md border border-line bg-ink p-3 text-[12.5px] leading-relaxed text-dim">{t.description}</p>}
 
           <div className="flex flex-wrap gap-2">
-            {!t.assignee_id && ['BACKLOG', 'PLANNED', 'BLOCKED'].includes(t.status) && <div className="w-full text-[12px] text-kin">Pick an Assignee above: the ▶ Run button appears once someone owns the task.</div>}
+            {!t.assignee_id && ['BACKLOG', 'PLANNED', 'BLOCKED'].includes(t.status) && <div className="w-full text-[12px] text-kin">Autopilot: the CEO is choosing who does this. You can also pick an Assignee yourself.</div>}
             {t.status === 'ASSIGNED' && <button className="btn btn-primary" onClick={() => act(() => api('POST', `/api/tasks/${id}/run`))}>▶ Run with Claude</button>}
             {t.status === 'RUNNING' && t.lock_session && <>
               <a className="btn" href={`#/sessions/${t.lock_session}`}>Watch live</a>

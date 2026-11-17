@@ -39,7 +39,7 @@ export default function Overview({ overview: o }: { overview: any }) {
         <Tile label="Failed" value={o.agents.failedLast24h} tone={o.agents.failedLast24h ? 'text-shu' : ''} sub="agents · last 24h" />
         <Tile label="Running" value={(s.running ?? 0) + (s.starting ?? 0)} sub={`${s.queued ?? 0} queued`} />
         <Tile label="Done" value={t.DONE ?? 0} sub={`${t.REVIEW ?? 0} in review`} />
-        <Tile label="Approvals" value={o.pendingApprovals} tone={o.pendingApprovals ? 'text-kin' : ''} sub="pending" />
+        <Tile label="Needs you" value={o.pendingApprovals} tone={o.pendingApprovals ? "text-accent" : ""} sub="in your Inbox" />
         <Tile label="Recruitment" value={o.pendingRecruitment} sub="requests pending" />
       </div>
 

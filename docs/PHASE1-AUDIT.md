@@ -143,3 +143,9 @@ Done:
   - Global Stop all, pause, Claude 5h meter and cost estimate always in the header.
   - Dependency-free Markdown renderer (React elements only, no innerHTML).
 Verified: `npm test` 29/29 · `vite build` OK · headless Edge screenshots of agent view, task board, brief drawer, overview against a throwaway seeded DB.
+
+### 2026-11-17 — Autopilot (owner: "let them handle it, only ask me to approve opinions")
+- Policy `org.autoPilot` (default on, ☰ menu toggle): unassigned task → CEO **dispatch** session (no tools) picks the assignee → department leader rates difficulty → work runs → dependents start when their deps are DONE. Respects pause; concurrency still enforced by the queue. Triggered after every task/session change, on resume and at startup.
+- Finished work is **auto-approved** (REVIEW → DONE) unless the agent ends with `NEEDS_OWNER: …` or hit a non-publish blocked tool. Those land in the **Inbox** (right bar, default tab; header "N need you") with Approve / Send back. Failed tasks (Retry/Cancel) and tasks the CEO could not assign also appear there.
+- Agents are local-only: deploy / firebase / git push / gh are hard-denied; a blocked deploy is expected and does not ping the owner.
+- Tests: 35/35 (autopilot flow, NEEDS_OWNER, denial handling, pause/off).

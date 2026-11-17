@@ -9,6 +9,7 @@ import Tasks from './pages/Tasks';
 import Sessions from './pages/Sessions';
 import Settings from './pages/Settings';
 import Agent from './pages/Agent';
+import { InboxTab } from './Inbox';
 
 const PAGES = [
   { id: 'overview', name: 'Overview', key: '1', C: Overview },
@@ -50,7 +51,7 @@ function App() {
   const [page, param] = route.split('/');
   const [theme, setTheme] = useTheme();
   const connected = useConnected();
-  const ov = useResource<any>('/api/overview', ['session.status', 'paused', 'limited', 'org', 'usage'], 15000);
+  const ov = useResource<any>('/api/overview', ['session.status', 'paused', 'limited', 'org', 'usage', 'task'], 15000);
   const org = useResource<{ departments: any[]; agents: any[] }>('/api/org', ['org', 'session.status']);
   const [right, setRight] = useState(() => store.get('hq.right', '1') === '1');
   useEffect(() => store.set('hq.right', right ? '1' : '0'), [right]);
@@ -197,7 +198,19 @@ function Menu({ page, theme, setTheme, paused, reloadOv, onToast, onClose }:
       <button className="flex h-8 w-full items-center rounded-md px-2.5 text-[12px] hover:bg-panel" onClick={() => api('POST', '/api/owner/pause', { paused: !paused }).then(() => { reloadOv(); onToast(paused ? 'Organization resumed' : 'Organization paused: no new sessions start'); onClose(); })}>
         {paused ? '▶ Resume organization' : '❚❚ Pause organization'}
       </button>
+      <AutopilotToggle onToast={onToast} reloadOv={reloadOv} />
     </div>
+  );
+}
+
+function AutopilotToggle({ onToast, reloadOv }: { onToast: (s: string) => void; reloadOv: () => void }) {
+  const ov = useResource<any>('/api/overview', ['task']);
+  const on = ov.data?.autoPilot ?? true;
+  return (
+    <button className="flex h-8 w-full items-center rounded-md px-2.5 text-[12px] hover:bg-panel"
+      onClick={() => api('PUT', '/api/policies/org.autoPilot', { value: !on }).then(() => { ov.reload(); reloadOv(); onToast(on ? 'Autopilot off: you assign and run tasks yourself' : 'Autopilot on: the team assigns, runs and approves routine work'); })}>
+      ✈ Autopilot<span className={`ml-auto text-[11px] ${on ? 'text-matcha' : 'text-faint'}`}>{on ? 'ON' : 'OFF'}</span>
+    </button>
   );
 }
 
@@ -239,6 +252,8 @@ function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight
       <div className="ml-auto flex shrink-0 items-center gap-3">
         {ov?.claude?.rateLimitedUntil && <span className="pill text-kin">limit · resumes {new Date(ov.claude.rateLimitedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
         {ov?.paused && <span className="pill text-kin">paused</span>}
+        {ov && <span className={`pill ${ov.autoPilot ? 'text-matcha' : 'text-faint'}`} title="Autopilot: the CEO assigns, work starts and routine results are approved automatically">{ov.autoPilot ? '✈ autopilot' : 'manual'}</span>}
+        {ov?.pendingApprovals > 0 && <button className="pill text-accent" onClick={() => { setRight(() => true); setTimeout(() => dispatchEvent(new Event('hq:inbox'))); }}>● {ov.pendingApprovals} need you</button>}
         {ov?.claude?.costEstimateTodayUsd != null && <span className="pill text-matcha" title="API-equivalent estimate today; not a bill">${ov.claude.costEstimateTodayUsd.toFixed(2)}</span>}
         <button className="w-28 text-left" onClick={check} disabled={checking}
           title={five ? `Claude 5-hour window: ${pct}% · updated ${ago(ov?.claude?.lastRateLimitAt)} · click to refresh` : 'Click to ask Claude for current usage'}>
@@ -256,18 +271,22 @@ function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight
 
 // ---------------------------------------------------------------- Right Bar
 function RightBar({ agentId, agents }: { agentId: string | null; agents: any[] }) {
-  const [tab, setTab] = useState(() => store.get('hq.rtab', 'tasks'));
+  const [tab, setTab] = useState(() => store.get('hq.rtab', 'inbox'));
   useEffect(() => store.set('hq.rtab', tab), [tab]);
-  const tabs = [['tasks', 'Tasks'], ['activity', 'Activity'], ['history', 'History']];
+  useEffect(() => { const f = () => setTab('inbox'); addEventListener('hq:inbox', f); return () => removeEventListener('hq:inbox', f); }, []);
+  const inbox = useResource<any[]>('/api/inbox', ['task', 'session.status']);
+  const n = inbox.data?.length ?? 0;
+  const tabs = [['inbox', 'Inbox'], ['tasks', 'Tasks'], ['activity', 'Activity'], ['history', 'History']];
   return (
     <aside className="flex min-h-0 flex-col border-l border-line bg-panel">
       <div className="flex h-14 shrink-0 border-b border-line">
         {tabs.map(([id, name]) => (
           <button key={id} onClick={() => setTab(id)}
-            className={`flex-1 border-b-2 text-[12px] transition-colors ${tab === id ? 'border-accent text-fg' : 'border-transparent text-dim hover:text-fg'}`}>{name}</button>
+            className={`flex flex-1 items-center justify-center gap-1.5 border-b-2 text-[12px] transition-colors ${tab === id ? 'border-accent text-fg' : 'border-transparent text-dim hover:text-fg'}`}>{name}{id === 'inbox' && n > 0 && <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-bold text-accent-fg">{n}</span>}</button>
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {tab === 'inbox' && <InboxTab agents={agents} />}
         {tab === 'tasks' && <TasksTab agentId={agentId} agents={agents} />}
         {tab === 'activity' && <ActivityTab agentId={agentId} />}
         {tab === 'history' && <HistoryTab agentId={agentId} />}

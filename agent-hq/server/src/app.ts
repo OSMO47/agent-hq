@@ -12,7 +12,7 @@ import { deleteProject, projectFootprint } from './domain/projects.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
-  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents']);
+  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot']);
 const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
 
 /** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
@@ -37,7 +37,9 @@ const h = (fn: Handler) => async (req: Request, res: Response, next: NextFunctio
 /** Builds the HTTP + WS server. Local-only: rejects foreign Host/Origin headers (DNS-rebinding guard). */
 export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; port: number; staticDir?: string }) {
   const runner = new TaskRunner(db, sm, opts.dataDir);
-  const planner = new CeoPlanner(db, sm, opts.dataDir, (projectId) => broadcast({ type: 'project', projectId }));
+  const planner = new CeoPlanner(db, sm, opts.dataDir, (projectId) => { broadcast({ type: 'project', projectId }); pilot(); });
+  /** Let the organization move on by itself after any change (no-op when autopilot is off or the org is paused). */
+  const pilot = () => setImmediate(() => { runner.autoPilot(); broadcast({ type: 'task' }); });
   const app = express();
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
   app.use((req, res, next) => {
@@ -63,7 +65,8 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     return {
       agents: { total: agents.total, active: agents.active, suspended: agents.suspended, busy: busy.n, idle: agents.active - busy.n, failedLast24h: failedAgents.n },
       tasks, sessions,
-      pendingApprovals: (one("SELECT COUNT(*) n FROM approvals WHERE status='pending'") as any).n,
+      pendingApprovals: inbox().length,
+      autoPilot: getPolicy(db, 'org.autoPilot', true),
       pendingRecruitment: (one("SELECT COUNT(*) n FROM recruitment_requests WHERE status IN ('pending_ceo','pending_owner')") as any).n,
       system: { cpuCount: cpus.length, cpuPercent, gpu: null, cpuModel: cpus[0]?.model, totalMem: os.totalmem(), freeMem: os.freemem(), uptime: os.uptime() },
       claude: { lastRateLimit: sm.lastRateLimit, lastRateLimitAt: sm.lastRateLimitAt, rateLimitedUntil: sm.rateLimitedUntil || null,
@@ -159,6 +162,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     if (!b.projectId || !b.title) throw new TaskError('projectId and title required');
     const t = createTask(db, { ...b, actor: OWNER });
     broadcast({ type: 'task', task: t });
+    pilot();
     return t;
   }));
   app.patch('/api/tasks/:id', h((req) => {
@@ -178,6 +182,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     audit(db, OWNER, 'task.update', id, req.body);
     const out = getTask(db, id);
     broadcast({ type: 'task', task: out });
+    pilot();
     return out;
   }));
   app.post('/api/tasks/:id/transition', h((req) => {
@@ -185,6 +190,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     if (t.status === 'DONE') db.prepare("UPDATE tasks SET review_status = 'approved' WHERE id = ?").run(t.id);
     if (req.body?.to === 'ASSIGNED' && req.body?.note) db.prepare('INSERT INTO task_comments (task_id, author, body) VALUES (?, ?, ?)').run(t.id, OWNER, req.body.note);
     broadcast({ type: 'task', task: getTask(db, t.id) });
+    pilot();
     return getTask(db, t.id);
   }));
   app.post('/api/tasks/:id/comments', h((req) => {
@@ -227,7 +233,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   app.post('/api/owner/pause', h((req) => {
     const paused = !!req.body?.paused;
     setPolicy(db, 'org.paused', paused, OWNER);
-    if (!paused) sm.pump();
+    if (!paused) { sm.pump(); pilot(); }
     broadcast({ type: 'paused', paused });
     return { paused };
   }));
@@ -244,6 +250,22 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     sm.pump();
     return { key, value: req.body?.value };
   }));
+  /** Owner inbox: only what needs a human. Decisions agents flagged, failed tasks, tasks nobody could be assigned to. */
+  function inbox() {
+    const last = (taskId: string, author?: string) => (one(`SELECT body FROM task_comments WHERE task_id = ? ${author ? 'AND author = ?' : "AND author NOT IN ('owner','system')"} ORDER BY id DESC LIMIT 1`, ...(author ? [taskId, author] : [taskId])) as any)?.body ?? null;
+    const items: any[] = [];
+    for (const t of all("SELECT * FROM tasks WHERE status = 'REVIEW' AND COALESCE(review_status,'pending') = 'pending' ORDER BY updated_at DESC") as any[]) {
+      items.push({ kind: 'decision', task: t, question: last(t.id, 'system')?.replace(/^Needs your decision:\s*/, '') ?? null, report: last(t.id) });
+    }
+    for (const t of all("SELECT * FROM tasks WHERE status = 'FAILED' ORDER BY updated_at DESC") as any[]) items.push({ kind: 'failed', task: t, report: last(t.id) });
+    for (const t of all(`SELECT * FROM tasks t WHERE t.assignee_id IS NULL AND t.status IN ('BACKLOG','PLANNED')
+        AND (? = 0 OR ((SELECT COUNT(*) FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch') >= 2
+             AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch' AND s.status IN ('queued','starting','running'))))`,
+        getPolicy(db, 'org.autoPilot', true) ? 1 : 0) as any[]) items.push({ kind: 'unassigned', task: t });
+    return items;
+  }
+  app.get('/api/inbox', h(() => inbox()));
+
   app.get('/api/audit', h(() => all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 500')));
 
   if (opts.staticDir) {
@@ -269,5 +291,6 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   sm.on('rateLimit', () => broadcast({ type: 'usage' }));
   sm.on('limited', (until: number) => broadcast({ type: 'limited', until }));
 
+  pilot(); // pick up anything left waiting from before a restart
   return { app, server, wss, broadcast, runner };
 }
