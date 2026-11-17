@@ -10,10 +10,11 @@ import { readyTasks } from './domain/tasks.ts';
 import { CeoPlanner, gitDirty } from './domain/ceoPlanner.ts';
 import { deleteProject, projectFootprint } from './domain/projects.ts';
 import { Deployer, finishedProjects, gitTarget, suggestDeployCommand } from './domain/deploy.ts';
+import { MeetingRoom } from './domain/meetings.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
-  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot', 'runtime.permissionMode']);
+  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot', 'runtime.permissionMode', 'models.meeting']);
 const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
 
 /** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
@@ -42,6 +43,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   /** Let the organization move on by itself after any change (no-op when autopilot is off or the org is paused). */
   const pilot = () => setImmediate(() => { runner.autoPilot(); broadcast({ type: 'task' }); });
   const deployer = new Deployer(db);
+  const meetings = new MeetingRoom(db, sm, opts.dataDir);
   const app = express();
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
   app.use((req, res, next) => {
@@ -246,7 +248,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     const v = req.body?.value;
     if (key === 'models.byDifficulty' && !(v && ['easy', 'medium', 'hard'].every((d) => MODEL_ALIASES.has(v[d])))) throw new TaskError('need a model (opus|sonnet|haiku) for easy, medium and hard');
     if (key === 'runtime.permissionMode' && !['auto', 'default', 'acceptEdits'].includes(v)) throw new TaskError('permissionMode must be auto, default or acceptEdits');
-    if ((key === 'runtime.defaultModel' || key === 'models.assessment') && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
+    if ((key === 'runtime.defaultModel' || key === 'models.assessment' || key === 'models.meeting') && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
     if (key === 'models.autoEscalate' && typeof v !== 'boolean') throw new TaskError('must be true or false');
     if (/maxConcurrentSessions|maxTurnsPerSession|maxAgents|sessionTimeoutMs/.test(key) && !(Number.isInteger(v) && v > 0)) throw new TaskError('must be a positive integer');
     setPolicy(db, key, req.body?.value, OWNER);
@@ -265,6 +267,10 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
         AND (? = 0 OR ((SELECT COUNT(*) FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch') >= 2
              AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch' AND s.status IN ('queued','starting','running'))))`,
         getPolicy(db, 'org.autoPilot', true) ? 1 : 0) as any[]) items.push({ kind: 'unassigned', task: t });
+    // Meetings that produced ideas the owner has not decided on yet.
+    for (const m of all("SELECT m.*, (SELECT COUNT(*) FROM meeting_ideas i WHERE i.meeting_id = m.id AND i.status = 'pending') pending FROM meetings m WHERE m.status = 'done' ORDER BY m.ended_at DESC") as any[]) {
+      if (m.pending > 0) items.push({ kind: 'meeting', task: { id: m.id, title: m.topic, updated_at: m.ended_at }, meeting: m });
+    }
     // Finished work: tell the owner and ask whether to deploy (agents never deploy).
     const finished = finishedProjects(db);
     // Keep showing a project whose deploy is running or whose result is not dismissed yet.
@@ -280,6 +286,30 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     return items;
   }
   app.get('/api/inbox', h(() => inbox()));
+
+  // ---------- Idea meetings ----------
+  app.get('/api/meetings', h(() => all(`SELECT m.*, p.name project_name,
+      (SELECT COUNT(*) FROM meeting_messages x WHERE x.meeting_id = m.id) said,
+      (SELECT COUNT(*) FROM meeting_ideas i WHERE i.meeting_id = m.id AND i.status = 'pending') pending
+      FROM meetings m JOIN projects p ON p.id = m.project_id ORDER BY m.created_at DESC LIMIT 100`)));
+  app.get('/api/meetings/:id', h((req) => {
+    const m = one('SELECT m.*, p.name project_name FROM meetings m JOIN projects p ON p.id = m.project_id WHERE m.id = ?', req.params.id) as any;
+    if (!m) throw new TaskError('meeting not found');
+    const cur = m.current_session ? one('SELECT s.id, s.status, s.agent_id, a.name, a.role FROM sessions s JOIN agents a ON a.id = s.agent_id WHERE s.id = ?', m.current_session) : null;
+    return { meeting: m, current: cur,
+      messages: all('SELECT x.*, a.name, a.role FROM meeting_messages x JOIN agents a ON a.id = x.agent_id WHERE x.meeting_id = ? ORDER BY x.id', m.id),
+      ideas: all('SELECT * FROM meeting_ideas WHERE meeting_id = ? ORDER BY rowid', m.id) };
+  }));
+  app.post('/api/meetings', h((req) => meetings.start({ projectId: String(req.body?.projectId ?? ''), topic: String(req.body?.topic ?? ''),
+    participants: Array.isArray(req.body?.participants) ? req.body.participants : [], rounds: req.body?.rounds, actor: OWNER })));
+  app.post('/api/meetings/:id/stop', h((req) => { meetings.stop(req.params.id as string, OWNER); return { ok: true }; }));
+  app.post('/api/ideas/:id/:decision', h((req) => {
+    const d = req.params.decision;
+    if (d !== 'approve' && d !== 'reject') throw new TaskError('approve or reject');
+    meetings.decide(req.params.id as string, d === 'approve', OWNER);
+    if (d === 'approve') pilot();
+    return { ok: true };
+  }));
   /** Owner-only publish: runs the project's deploy command (optionally committing first). */
   app.post('/api/projects/:id/deploy', h((req) => deployer.start(req.params.id as string, { command: String(req.body?.command ?? ''), commit: !!req.body?.commit, push: !!req.body?.push, deploy: req.body?.deploy !== false && !!req.body?.command, actor: OWNER })));
   /** Same data as the Inbox "finished" card, available anytime (manual publish from the Task board). */
@@ -317,6 +347,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   sm.on('event', (sessionId: string, event: unknown) => broadcast({ type: 'session.event', sessionId, event }));
   sm.on('status', (sessionId: string, status: string) => broadcast({ type: 'session.status', sessionId, status }));
   sm.on('rateLimit', () => broadcast({ type: 'usage' }));
+  meetings.on('change', (meetingId: string) => broadcast({ type: 'meeting', meetingId }));
   let deployTick: NodeJS.Timeout | null = null; // output can be chatty: coalesce pushes
   deployer.on('change', (projectId: string) => { if (!deployTick) deployTick = setTimeout(() => { deployTick = null; broadcast({ type: 'deploy', projectId }); }, 400); });
   sm.on('limited', (until: number) => broadcast({ type: 'limited', until }));

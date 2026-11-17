@@ -9,11 +9,13 @@ import Tasks from './pages/Tasks';
 import Sessions from './pages/Sessions';
 import Settings from './pages/Settings';
 import Agent from './pages/Agent';
+import Meetings from './pages/Meetings';
 import { InboxTab } from './Inbox';
 
 const PAGES = [
   { id: 'overview', name: 'Overview', key: '1', C: Overview },
   { id: 'tasks', name: 'Task board', key: '2', C: Tasks },
+  { id: 'meetings', name: 'ห้องประชุม', key: '6', C: Meetings },
   { id: 'sessions', name: 'Live sessions', key: '3', C: Sessions },
   { id: 'org', name: 'Organization', key: '4', C: Organization },
   { id: 'settings', name: 'Settings', key: '5', C: Settings },
@@ -70,7 +72,7 @@ function App() {
   }, []);
 
   // Tell the owner when work is finished (deploy?) or someone needs a decision: popup + desktop notification + tab title.
-  const inboxAll = useResource<any[]>('/api/inbox', ['task', 'session.status', 'deploy', 'project']);
+  const inboxAll = useResource<any[]>('/api/inbox', ['task', 'session.status', 'deploy', 'project', 'meeting']);
   const seen = useRef<Set<string> | null>(null);
   useEffect(() => {
     const ask = () => { try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch { /* unsupported */ } };
@@ -80,13 +82,13 @@ function App() {
   useEffect(() => {
     const items = inboxAll.data; if (!items) return;
     document.title = items.length ? `(${items.length}) Agent HQ` : 'Agent HQ';
-    const key = (i: any) => (i.kind === 'finished' ? (i.deploy ? null : `finished:${i.project.id}:${i.done.length}`) : i.kind === 'decision' ? `decision:${i.task.id}` : null);
+    const key = (i: any) => (i.kind === 'finished' ? (i.deploy ? null : `finished:${i.project.id}:${i.done.length}`) : i.kind === 'decision' ? `decision:${i.task.id}` : i.kind === 'meeting' ? `meeting:${i.task.id}` : null);
     const keys = items.map(key).filter(Boolean) as string[];
     if (seen.current === null) { seen.current = new Set(keys); return; } // do not announce what was already there on load
     for (const it of items) {
       const k = key(it); if (!k || seen.current.has(k)) continue;
       seen.current.add(k);
-      const msg = it.kind === 'finished' ? `✓ ${it.project.name}: งานเสร็จแล้ว · deploy ไหม?` : `● ${it.task.title}: รอคุณตัดสินใจ`;
+      const msg = it.kind === 'finished' ? `✓ ${it.project.name}: งานเสร็จแล้ว · deploy ไหม?` : it.kind === 'meeting' ? `◎ ประชุมเสร็จ: ${it.meeting.pending} ไอเดียรออนุมัติ` : `● ${it.task.title}: รอคุณตัดสินใจ`;
       setToast(msg);
       try { if ('Notification' in window && Notification.permission === 'granted') new Notification('Agent HQ', { body: msg }); } catch { /* ignore */ }
       setRight(true); setTimeout(() => dispatchEvent(new Event('hq:inbox')));
@@ -168,8 +170,9 @@ function LeftBar({ org, connected, current, page, theme, setTheme, paused, reloa
       </nav>
 
       <div className="flex shrink-0 gap-2 border-t border-line p-3">
-        <a className="btn btn-primary h-9 flex-1" href="#/tasks/brief">✦ Brief CEO</a>
-        <a className="btn btn-primary h-9 flex-1" href="#/tasks/new">＋ New Task</a>
+        <a className="btn btn-primary h-9 flex-1 px-1.5 text-[11px]" href="#/tasks/brief">✦ Brief CEO</a>
+        <a className="btn btn-primary h-9 flex-1 px-1.5 text-[11px]" href="#/tasks/new">＋ Task</a>
+        <a className="btn h-9 flex-1 px-1.5 text-[11px]" href="#/meetings/new" title="ห้องประชุมเสนอไอเดีย">◎ ประชุม</a>
       </div>
     </aside>
   );
@@ -358,7 +361,7 @@ function ActivityTab({ agentId }: { agentId: string | null }) {
               <span className="truncate text-[12px] text-ai">{s.agent_name}</span>
               <span className="chip ml-auto text-accent">{s.model}</span>
             </div>
-            <div className="mt-1 truncate text-[11px] text-dim">{s.task_title ?? (s.purpose === 'plan' ? 'CEO planning' : s.purpose === 'assess' ? 'Difficulty rating' : 'Follow-up')}</div>
+            <div className="mt-1 truncate text-[11px] text-dim">{s.task_title ?? (s.purpose === 'plan' ? 'CEO planning' : s.purpose === 'assess' ? 'Difficulty rating' : s.purpose === 'meeting' ? 'ห้องประชุม' : s.purpose === 'dispatch' ? 'CEO assigning' : 'Follow-up')}</div>
             <div className="mt-1.5 flex items-center gap-2 text-[10.5px] text-faint">
               <Status s={s.status} /><span>{ago(s.queued_at)}</span>
               {s.cost_usd_estimate != null && <span className="ml-auto text-matcha">${s.cost_usd_estimate.toFixed(2)}</span>}

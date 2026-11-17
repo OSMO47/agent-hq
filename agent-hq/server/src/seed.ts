@@ -22,6 +22,7 @@ export const DEFAULT_POLICIES: Record<string, unknown> = {
   'runtime.maxTurnsPerSession': 30,
   'org.paused': false,
   'org.autoPilot': true,               // CEO assigns, ready work starts, clean results auto-approve
+  'models.meeting': 'sonnet',          // model for meeting speakers (design agents stay on opus)
   'runtime.permissionMode': 'auto',    // Claude Code auto mode for work sessions; deny rules still win
   'recruitment.requiresOwnerApproval': true,
   'recruitment.maxAgents': 40,

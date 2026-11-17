@@ -15,7 +15,7 @@ export function InboxTab({ agents }: { agents: any[] }) {
   if (data.length === 0) return (
     <Empty><div className="space-y-1"><div className="text-[18px] text-matcha">✓</div><div>ไม่มีเรื่องรอคุณ</div><div>ทีมแบ่งงาน ทำงาน และอนุมัติงานปกติกันเองอยู่</div></div></Empty>
   );
-  return <div className="space-y-3 p-3">{data.map((it) => it.kind === 'finished' ? <Finished key={`f:${it.project.id}`} it={it} onDone={reload} /> : <Item key={`${it.kind}:${it.task.id}`} it={it} agents={agents} onDone={reload} />)}</div>;
+  return <div className="space-y-3 p-3">{data.map((it) => it.kind === 'meeting' ? <MeetingItem key={`m:${it.meeting.id}`} it={it} /> : it.kind === 'finished' ? <Finished key={`f:${it.project.id}`} it={it} onDone={reload} /> : <Item key={`${it.kind}:${it.task.id}`} it={it} agents={agents} onDone={reload} />)}</div>;
 }
 
 const KIND = { decision: ['รอคุณตัดสินใจ', 'text-accent border-accent/40'], failed: ['งานล้มเหลว', 'text-shu border-shu/40'], unassigned: ['ยังไม่มีคนรับงาน', 'text-kin border-kin/40'] } as const;
@@ -153,5 +153,19 @@ export function Finished({ it, onDone }: { it: any; onDone: () => void }) {
       )}
       {err && <div className="mt-2 text-[11.5px] text-shu">{err}</div>}
     </div>
+  );
+}
+
+/** A finished idea meeting with ideas waiting for the owner. */
+function MeetingItem({ it }: { it: any }) {
+  return (
+    <a href={`#/meetings/${it.meeting.id}`} className="rise block rounded-lg border border-ai/50 bg-ai/[.05] p-3 hover:border-ai">
+      <div className="flex items-center gap-2 text-[10.5px]">
+        <span className="font-bold uppercase tracking-wider text-ai">◎ ประชุมเสร็จแล้ว</span>
+        <span className="ml-auto text-faint">{ago(it.task.updated_at)}</span>
+      </div>
+      <div className="mt-1 line-clamp-2 text-[12.5px] leading-snug">{it.meeting.topic}</div>
+      <div className="mt-2 text-[11.5px] text-accent">{it.meeting.pending} ไอเดียรออนุมัติ → เปิดห้องประชุม</div>
+    </a>
   );
 }

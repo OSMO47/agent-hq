@@ -35,6 +35,8 @@ export function deleteProject(db: DB, id: string, actor: string) {
     }
     db.prepare(`DELETE FROM task_dependencies WHERE depends_on IN (${tasks})`).run(id);
     db.prepare("DELETE FROM memories WHERE scope = 'project' AND scope_id = ?").run(id);
+    for (const t of ['meeting_ideas', 'meeting_messages']) db.prepare(`DELETE FROM ${t} WHERE meeting_id IN (SELECT id FROM meetings WHERE project_id = ?)`).run(id);
+    db.prepare('DELETE FROM meetings WHERE project_id = ?').run(id);
     db.prepare('UPDATE recruitment_requests SET project_id = NULL WHERE project_id = ?').run(id);
     db.prepare('DELETE FROM tasks WHERE project_id = ?').run(id);
     db.prepare('DELETE FROM projects WHERE id = ?').run(id);

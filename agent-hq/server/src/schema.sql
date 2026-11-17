@@ -218,3 +218,37 @@ CREATE TABLE IF NOT EXISTS audit_log (
   details    TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Idea meetings: owner topic -> participants speak in rounds (read-only) -> CEO summary -> idea cards the owner approves into tasks.
+CREATE TABLE IF NOT EXISTS meetings (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id),
+  topic           TEXT NOT NULL,
+  participants    TEXT NOT NULL,            -- JSON array of agent ids, speaking order
+  rounds          INTEGER NOT NULL DEFAULT 2,
+  status          TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','summarizing','done','stopped','failed')),
+  current_session TEXT,
+  summary         TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at        TEXT
+);
+CREATE TABLE IF NOT EXISTS meeting_messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  agent_id   TEXT NOT NULL,
+  round      INTEGER NOT NULL,
+  body       TEXT NOT NULL,
+  session_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS meeting_ideas (
+  id          TEXT PRIMARY KEY,
+  meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  title       TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  why         TEXT NOT NULL DEFAULT '',
+  assignee_id TEXT,
+  status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  task_id     TEXT REFERENCES tasks(id),
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);

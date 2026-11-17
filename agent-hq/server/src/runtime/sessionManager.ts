@@ -10,7 +10,7 @@ export interface SessionRow {
   cost_usd_estimate: number | null; input_tokens: number | null; output_tokens: number | null; num_turns: number | null;
 }
 
-export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec; actor: string; purpose?: 'work' | 'assess' | 'plan' | 'dispatch' | 'message'; projectId?: string }
+export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec; actor: string; purpose?: 'work' | 'assess' | 'plan' | 'dispatch' | 'meeting' | 'message'; projectId?: string }
 
 /**
  * Owns every live Claude process. Enforces the concurrency limit, timeouts, stop / stop-all,
