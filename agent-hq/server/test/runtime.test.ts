@@ -148,3 +148,14 @@ test('usage probe: one tool-less haiku turn; report persists across restart', as
   assert.deepEqual(sm2.lastRateLimit, info);
   assert.ok(sm2.lastRateLimitAt);
 });
+
+test('local-only rule: every agent spec hard-denies deploy/push and says so', async () => {
+  const { buildSpec, PUBLISH_DENY } = await import('../src/domain/taskRunner.ts');
+  const { db } = setup();
+  for (const a of db.prepare('SELECT * FROM agents').all() as any[]) {
+    const s = buildSpec(a, 'x', '.', 5);
+    for (const d of PUBLISH_DENY) assert.ok(s.disallowedTools!.includes(d), `${a.id} must deny ${d}`);
+    assert.match(s.systemPrompt!, /Never deploy/);
+    assert.ok(!buildClaudeArgs(s).includes('--dangerously-skip-permissions'));
+  }
+});

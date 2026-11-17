@@ -92,6 +92,12 @@ export default function Tasks({ param }: { param?: string }) {
         </div>
       </div>
 
+      {pstat.data?.paused && (
+        <div className="flex shrink-0 items-center gap-3 border-b border-kin/30 bg-kin/10 px-5 py-2 text-[12px] text-kin">
+          ❚❚ Organization is paused: tasks can be created but no agent will start.
+          <button className="btn h-6 text-[11px]" onClick={() => api('POST', '/api/owner/pause', { paused: false }).then(pstat.reload)}>▶ Resume</button>
+        </div>
+      )}
       <div className="grid min-h-0 flex-1 grid-cols-6 gap-3 overflow-x-auto p-4">
         {COLUMNS.map((col) => {
           const items = all.filter((t) => t.status === col || (col === 'BACKLOG' && SIDE.includes(t.status)));
@@ -112,6 +118,7 @@ export default function Tasks({ param }: { param?: string }) {
                       <span className="truncate">{agentName(t.assignee_id)}</span>
                       {SIDE.includes(t.status) && <span className="ml-auto"><Status s={t.status} /></span>}
                       {!SIDE.includes(t.status) && blocked(t.id) && <span className="ml-auto text-[10.5px] text-kin">waiting on deps</span>}
+                      {!t.assignee_id && ['BACKLOG', 'PLANNED'].includes(t.status) && <span className="ml-auto text-[10.5px] text-kin">needs assignee</span>}
                     </div>
                   </button>
                 ))}
@@ -231,6 +238,7 @@ function CeoBrief({ projectId, status, reload, onClose }: { projectId: string; s
 
 function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agents: any[]; tasks: any[]; onDone: () => void }) {
   const [f, setF] = useState({ title: '', description: '', assigneeId: '', priority: 2, difficulty: '', dependsOn: [] as string[] });
+  const [startNow, setStartNow] = useState(true);
   const modelFor = useModelFor(agents);
   const assignee = agents.find((a) => a.id === f.assigneeId);
   const fixed = assignee?.model_mode === 'fixed';
@@ -239,7 +247,12 @@ function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agen
     <Drawer open onClose={onDone} title="New task">
       <form className="space-y-3" onSubmit={async (e) => {
         e.preventDefault();
-        try { await api('POST', '/api/tasks', { projectId, ...f, assigneeId: f.assigneeId || undefined, difficulty: f.difficulty || undefined }); onDone(); } catch (x) { setErr((x as Error).message); }
+        if (startNow && !f.assigneeId) { setErr('Pick an assignee to start right away (or untick "Start right away", or use Brief CEO to let the CEO decide).'); return; }
+        try {
+          const t = await api('POST', '/api/tasks', { projectId, ...f, assigneeId: f.assigneeId || undefined, difficulty: f.difficulty || undefined });
+          if (startNow) await api('POST', `/api/tasks/${t.id}/run`);
+          onDone();
+        } catch (x) { setErr((x as Error).message); }
       }}>
         <label className="block space-y-1"><span className="label">Title</span><input className="field" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} autoFocus required /></label>
         <label className="block space-y-1"><span className="label">Instructions for the agent</span><textarea className="field" rows={6} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></label>
@@ -271,7 +284,9 @@ function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agen
             {tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
           </select></label>}
         {err && <div className="text-[12px] text-shu">{err}</div>}
-        <button className="btn btn-primary">Create task</button>
+        <label className="flex items-center gap-2 text-[12px]"><input type="checkbox" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} />Start right away <span className="text-faint">(otherwise it waits on the board until you press ▶ Run)</span></label>
+        <div className="text-[11px] text-faint">Agents work on local files only: deploy and git push are blocked.</div>
+        <button className="btn btn-primary">{startNow ? 'Create & start' : 'Create task'}</button>
       </form>
     </Drawer>
   );
