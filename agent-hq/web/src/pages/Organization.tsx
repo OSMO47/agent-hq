@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api, useResource, MODELS } from '../api';
 import { Dot, Drawer, Empty, Kv, Status } from '../ui';
 
-type Agent = { id: string; name: string; role: string; level: number; department_id: string | null; reports_to: string | null; model: string;
+type Agent = { id: string; name: string; role: string; level: number; department_id: string | null; reports_to: string | null; model: string; model_mode: 'difficulty' | 'fixed';
   instructions: string; permissions: string; status: string; session_id: string | null; session_status: string | null; current_task: string | null };
 
 const agentState = (a: Agent) => (a.status !== 'active' ? a.status : a.session_status ?? 'idle');
@@ -15,7 +15,9 @@ function AgentChip({ a, onOpen, big }: { a: Agent; onOpen: (a: Agent) => void; b
       <div className="flex items-center gap-2">
         <Dot status={st} />
         <span className={`truncate ${big ? 'text-[13px] font-medium' : 'text-[12.5px]'}`}>{a.level === 3 ? a.role : a.name}</span>
-        <span className="ml-auto font-mono text-[10px] text-faint">{a.model}</span>
+        <span className={`ml-auto font-mono text-[10px] ${a.model_mode === 'fixed' ? 'text-kin' : 'text-faint'}`} title={a.model_mode === 'fixed' ? 'Always this model' : 'Model by task difficulty'}>
+          {a.model_mode === 'fixed' ? a.model : 'auto'}
+        </span>
       </div>
       {big && <div className="mt-0.5 truncate pl-3.5 text-[11.5px] text-dim">{a.role}</div>}
       {a.current_task && <div className="mt-1 truncate pl-3.5 text-[11px] text-matcha">→ {a.current_task}</div>}
@@ -82,8 +84,18 @@ export default function Organization() {
                 {current.session_id && <Kv k="Session"><a className="font-mono text-[11.5px] text-ai hover:underline" href={`#/sessions/${current.session_id}`}>{current.session_id}</a></Kv>}
               </div>
               <div>
-                <div className="label mb-1">Default model</div>
-                <div className="mb-2 text-[11.5px] text-faint">Used only when a task has no difficulty. Difficulty → model is set in Settings.</div>
+                <div className="label mb-2">Model choice</div>
+                <div className="mb-3 inline-flex rounded-md border border-line-strong bg-ink p-0.5">
+                  {([['difficulty', 'By task difficulty'], ['fixed', 'Always this model']] as const).map(([m, label]) => (
+                    <button key={m} onClick={() => current.model_mode !== m && patch({ modelMode: m })}
+                      className={`h-6 rounded-[5px] px-2.5 text-[12px] ${current.model_mode === m ? 'bg-fg font-medium text-ink' : 'text-dim hover:text-fg'}`}>{label}</button>
+                  ))}
+                </div>
+                <div className="mb-2 text-[11.5px] text-faint">
+                  {current.model_mode === 'fixed'
+                    ? 'Every task for this agent runs on the model below — no assessment, no escalation.'
+                    : 'Difficulty (set by you or rated by the department leader) picks the model; it moves up if the work is harder than expected. The model below is only a fallback.'}
+                </div>
                 <div className="flex gap-1.5">
                   {MODELS.map((m) => (
                     <button key={m} className={`btn ${current.model === m ? 'btn-primary' : ''}`} onClick={() => patch({ model: m })}>{m}</button>

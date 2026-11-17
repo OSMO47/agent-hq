@@ -94,7 +94,13 @@ export default function Settings() {
                 <Segmented value={byDiff[d.key]} options={MODELS} onChange={(m) => save('models.byDifficulty', { ...byDiff, [d.key]: m }, `${d.key} → ${m}`)} />
               </Row>
             ))}
-            <Row label="Default model for new agents" hint="Existing agents keep their model (change it in Organization).">
+            <Row label="Leader assessment" hint="Model a department leader uses to rate a task with no difficulty. Runs with no tools (~4k tokens).">
+              <Segmented value={val('models.assessment', 'sonnet')} options={MODELS} onChange={(m) => save('models.assessment', m, `assessment → ${m}`)} />
+            </Row>
+            <Row label="Escalate when harder than expected" hint="Agent says ESCALATE or runs out of turns → next level up, same conversation continues.">
+              <Switch on={!!val('models.autoEscalate', true)} onChange={(v) => save('models.autoEscalate', v, `auto-escalate ${v ? 'on' : 'off'}`)} />
+            </Row>
+            <Row label="Default model for new agents" hint="Design agents (Product & Design leader, UI/UX Designer, UX Researcher) are fixed on opus — change per agent in Organization.">
               <Segmented value={val('runtime.defaultModel', 'opus')} options={MODELS} onChange={(m) => save('runtime.defaultModel', m, `default → ${m}`)} />
             </Row>
           </Group>
@@ -130,7 +136,7 @@ const ACTION_LABEL: Record<string, string> = {
   'policy.set': 'Changed policy', 'task.transition': 'Moved task', 'task.update': 'Edited task', 'project.create': 'Created project',
   'session.enqueue': 'Queued session', 'session.stopped': 'Stopped session', 'session.timeout': 'Session timed out', 'session.stopAll': 'Stopped all sessions',
   'session.recover': 'Recovered sessions', 'task.recover': 'Recovered tasks', 'agent.update': 'Edited agent', 'org.seed': 'Created organization',
-  'runtime.rateLimited': 'Hit usage limit',
+  'runtime.rateLimited': 'Hit usage limit', 'task.assess': 'Rated task difficulty', 'task.escalate': 'Escalated task model',
 };
 
 function Audit() {

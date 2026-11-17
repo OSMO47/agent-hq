@@ -16,7 +16,10 @@ export default function Sessions({ param }: { param?: string }) {
           <a key={s.id} href={`#/sessions/${s.id}`}
             className={`block border-b border-line/60 px-4 py-2.5 transition-colors ${s.id === sel ? 'bg-raise' : 'hover:bg-raise/50'}`}>
             <div className="flex items-center gap-2"><Dot status={s.status} /><span className="truncate text-[12.5px]">{s.role}</span><span className="ml-auto"><Status s={s.status} /></span></div>
-            <div className="mt-1 truncate pl-3.5 text-[11.5px] text-dim">{s.task_title ?? 'Follow-up message'}</div>
+            <div className="mt-1 truncate pl-3.5 text-[11.5px] text-dim">
+              {s.purpose === 'assess' && <span className="mr-1.5 rounded border border-ai/30 px-1 text-[10px] text-ai">rating</span>}
+              {s.task_title ?? 'Follow-up message'}
+            </div>
             <div className="mt-1 flex gap-3 pl-3.5 font-mono text-[10.5px] text-faint">
               <span>{s.model}</span><span>{ago(s.queued_at)}</span>
               {s.input_tokens != null && <span>{Math.round(s.input_tokens / 1000)}k in · {s.output_tokens} out</span>}

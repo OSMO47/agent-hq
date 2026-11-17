@@ -125,3 +125,11 @@ Verified: `npm test` 20/20 · `vite build` OK · server boots, `/api/overview` r
 Not verified: visual check in a browser (the connected Chrome could not reach this machine's localhost).
 
 Next: CEO orchestration (owner request → CEO plan → tasks for leaders/specialists), git worktree per task, then Recruitment Center.
+
+### 2026-11-17 — Model selection rules (owner decision)
+1. Task difficulty → model via `models.byDifficulty` (owner-editable).
+2. No difficulty → the assignee's **department leader rates it** first (separate `assess` session, no tools, model `models.assessment`, ~4k tokens). Unreadable answer → medium.
+3. Agents with `model_mode = fixed` always use their own model: Product & Design leader, UI/UX Designer, UX Researcher → opus.
+4. **Escalation:** work sessions are told they may end with `ESCALATE: <reason>`; that, or hitting max turns, bumps difficulty one level and resumes the same Claude conversation on the stronger model (`--resume` + new `--model`). Toggle `models.autoEscalate`.
+5. Usage limit → wait & resume; never auto-downgrade.
+Tests: 27/27. Migrations add `tasks.difficulty`, `agents.model_mode`, `sessions.purpose` to existing DBs.

@@ -9,7 +9,7 @@ import { TaskRunner, buildSpec } from './domain/taskRunner.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
-  'runtime.defaultModel', 'models.byDifficulty', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents']);
+  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents']);
 const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
 
 /** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
@@ -80,12 +80,15 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   app.patch('/api/agents/:id', h((req) => {
     const a = one('SELECT * FROM agents WHERE id = ?', req.params.id) as any;
     if (!a) throw new TaskError('agent not found');
-    const { model, status, instructions, permissions } = req.body ?? {};
+    const { model, status, instructions, permissions, modelMode } = req.body ?? {};
     if (status && !['active', 'suspended', 'inactive'].includes(status)) throw new TaskError('bad status');
+    if (modelMode && !['difficulty', 'fixed'].includes(modelMode)) throw new TaskError('bad modelMode');
+    if (model && !MODEL_ALIASES.has(model)) throw new TaskError('unknown model');
+    if (modelMode) db.prepare('UPDATE agents SET model_mode = ? WHERE id = ?').run(modelMode, a.id);
     db.prepare('UPDATE agents SET model = COALESCE(?, model), status = COALESCE(?, status), instructions = COALESCE(?, instructions), permissions = COALESCE(?, permissions) WHERE id = ?')
       .run(model ?? null, status ?? null, instructions ?? null, permissions ? JSON.stringify(permissions) : null, a.id);
     audit(db, OWNER, 'agent.update', a.id, req.body);
-    if (status === 'suspended') for (const s of all("SELECT id FROM sessions WHERE agent_id = ? AND status IN ('queued','starting','running')", a.id) as any[]) sm.stop(s.id, OWNER);
+    if (status === 'suspended') for (const s of all("SELECT id FROM sessions WHERE (agent_id = ? OR task_id IN (SELECT id FROM tasks WHERE assignee_id = ?)) AND status IN ('queued','starting','running')", a.id, a.id) as any[]) sm.stop(s.id, OWNER);
     broadcast({ type: 'org' });
     return one('SELECT * FROM agents WHERE id = ?', a.id);
   }));
@@ -161,7 +164,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   }));
 
   // ---------- Sessions ----------
-  app.get('/api/sessions', h(() => all(`SELECT s.id, s.agent_id, a.name agent_name, a.role, s.task_id, t.title task_title, s.status, s.model,
+  app.get('/api/sessions', h(() => all(`SELECT s.id, s.agent_id, a.name agent_name, a.role, s.task_id, s.purpose, t.title task_title, s.status, s.model,
       s.claude_session_id, s.error, s.cost_usd_estimate, s.input_tokens, s.output_tokens, s.num_turns, s.queued_at, s.started_at, s.ended_at
       FROM sessions s JOIN agents a ON a.id = s.agent_id LEFT JOIN tasks t ON t.id = s.task_id ORDER BY s.queued_at DESC LIMIT 200`)));
   app.get('/api/sessions/:id', h((req) => {
@@ -179,7 +182,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     const prev = JSON.parse((one('SELECT spec FROM sessions WHERE id = ?', s.id) as any).spec);
     const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30)), resumeSessionId: s.claude_session_id };
     if (!spec.prompt) throw new TaskError('text required');
-    return { sessionId: sm.enqueue({ agentId: agent.id, actor: OWNER, spec }) };
+    return { sessionId: sm.enqueue({ agentId: agent.id, actor: OWNER, spec, purpose: 'message' }) };
   }));
 
   // ---------- Owner command center ----------
@@ -197,7 +200,8 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     if (!EDITABLE_POLICIES.has(key)) throw new TaskError(`policy ${key} is not editable here`);
     const v = req.body?.value;
     if (key === 'models.byDifficulty' && !(v && ['easy', 'medium', 'hard'].every((d) => MODEL_ALIASES.has(v[d])))) throw new TaskError('need a model (opus|sonnet|haiku) for easy, medium and hard');
-    if (key === 'runtime.defaultModel' && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
+    if ((key === 'runtime.defaultModel' || key === 'models.assessment') && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
+    if (key === 'models.autoEscalate' && typeof v !== 'boolean') throw new TaskError('must be true or false');
     if (/maxConcurrentSessions|maxTurnsPerSession|maxAgents|sessionTimeoutMs/.test(key) && !(Number.isInteger(v) && v > 0)) throw new TaskError('must be a positive integer');
     setPolicy(db, key, req.body?.value, OWNER);
     sm.pump();

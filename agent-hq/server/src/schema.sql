@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS agents (
   department_id TEXT REFERENCES departments(id),
   reports_to    TEXT REFERENCES agents(id),
   model         TEXT NOT NULL,            -- alias passed to --model (opus|sonnet|haiku|full id)
+  model_mode    TEXT NOT NULL DEFAULT 'difficulty' CHECK (model_mode IN ('difficulty','fixed')), -- fixed = always `model`
   instructions  TEXT NOT NULL DEFAULT '',
   permissions   TEXT NOT NULL DEFAULT '{}', -- JSON {allowedTools[], disallowedTools[], permissionMode}
   workspace     TEXT,
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   id                TEXT PRIMARY KEY,
   agent_id          TEXT NOT NULL REFERENCES agents(id),
   task_id           TEXT REFERENCES tasks(id),
+  purpose           TEXT NOT NULL DEFAULT 'work', -- work | assess | message
   claude_session_id TEXT,
   status            TEXT NOT NULL CHECK (status IN
                     ('queued','starting','running','completed','failed','stopped','timeout','interrupted')),

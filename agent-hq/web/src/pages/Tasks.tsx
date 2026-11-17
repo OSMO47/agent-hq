@@ -6,21 +6,32 @@ const COLUMNS = ['BACKLOG', 'PLANNED', 'ASSIGNED', 'RUNNING', 'REVIEW', 'DONE'];
 const SIDE = ['BLOCKED', 'FAILED', 'CANCELLED'];
 const PRIO = ['P0', 'P1', 'P2', 'P3', 'P4'];
 const DIFFS = [['easy', 'ง่าย'], ['medium', 'กลาง'], ['hard', 'ยาก']] as const;
+const DIFF_OPTIONS: [string, string][] = [['', 'หัวหน้าประเมิน'], ...DIFFS];
 const DIFF_TONE: Record<string, string> = { easy: 'text-matcha border-matcha/30', medium: 'text-ai border-ai/30', hard: 'text-shu border-shu/30' };
 
 /** Model a task will run on: difficulty → policy map; otherwise the assignee's own model. */
 function useModelFor(agents: any[]) {
   const pol = useResource<any[]>('/api/policies', []);
   const map = pol.data?.find((p) => p.key === 'models.byDifficulty')?.value ?? { easy: 'haiku', medium: 'sonnet', hard: 'opus' };
-  return (t: { difficulty?: string | null; assignee_id?: string | null }) =>
-    t.difficulty ? map[t.difficulty] : agents.find((a) => a.id === t.assignee_id)?.model ?? null;
+  /** Mirrors server modelFor(): fixed agents → own model; difficulty → map; none → leader will assess (null). */
+  return (t: { difficulty?: string | null; assignee_id?: string | null }) => {
+    const a = agents.find((x) => x.id === t.assignee_id);
+    if (a?.model_mode === 'fixed') return a.model;
+    return t.difficulty ? map[t.difficulty] : null;
+  };
 }
 
-const DiffBadge = ({ d, model }: { d?: string | null; model?: string | null }) => (
-  <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-px text-[10px] ${d ? DIFF_TONE[d] : 'border-line text-faint'}`}>
-    {d ?? 'agent default'}{model && <span className="font-mono opacity-70">· {model}</span>}
-  </span>
-);
+function DiffBadge({ t, agents, model }: { t: any; agents: any[]; model: string | null }) {
+  const fixed = agents.find((a) => a.id === t.assignee_id)?.model_mode === 'fixed';
+  const d = t.difficulty;
+  const label = fixed ? 'fixed' : d ?? 'leader assesses';
+  const tone = fixed ? 'border-kin/30 text-kin' : d ? DIFF_TONE[d] : 'border-line text-faint';
+  return (
+    <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-px text-[10px] ${tone}`}>
+      {label}{model && <span className="font-mono opacity-70">· {model}</span>}
+    </span>
+  );
+}
 
 export default function Tasks() {
   const projects = useResource<any[]>('/api/projects', ['project']);
@@ -75,7 +86,7 @@ export default function Tasks() {
                       <span className={`mt-px font-mono text-[10px] ${t.priority <= 1 ? 'text-shu' : 'text-faint'}`}>{PRIO[t.priority]}</span>
                       <span className="text-[12.5px] leading-snug">{t.title}</span>
                     </div>
-                    <div className="mt-2"><DiffBadge d={t.difficulty} model={modelFor(t)} /></div>
+                    <div className="mt-2"><DiffBadge t={t} agents={agents} model={modelFor(t)} /></div>
                     <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-dim">
                       {t.status === 'RUNNING' && <Dot status="running" />}
                       <span className="truncate">{agentName(t.assignee_id)}</span>
@@ -118,14 +129,16 @@ function NewProject({ onDone }: { onDone: (id?: string) => void }) {
 }
 
 function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agents: any[]; tasks: any[]; onDone: () => void }) {
-  const [f, setF] = useState({ title: '', description: '', assigneeId: '', priority: 2, difficulty: 'medium', dependsOn: [] as string[] });
+  const [f, setF] = useState({ title: '', description: '', assigneeId: '', priority: 2, difficulty: '', dependsOn: [] as string[] });
   const modelFor = useModelFor(agents);
+  const assignee = agents.find((a) => a.id === f.assigneeId);
+  const fixed = assignee?.model_mode === 'fixed';
   const [err, setErr] = useState('');
   return (
     <Drawer open onClose={onDone} title="New task">
       <form className="space-y-3" onSubmit={async (e) => {
         e.preventDefault();
-        try { await api('POST', '/api/tasks', { projectId, ...f, assigneeId: f.assigneeId || undefined }); onDone(); } catch (x) { setErr((x as Error).message); }
+        try { await api('POST', '/api/tasks', { projectId, ...f, assigneeId: f.assigneeId || undefined, difficulty: f.difficulty || undefined }); onDone(); } catch (x) { setErr((x as Error).message); }
       }}>
         <label className="block space-y-1"><span className="label">Title</span><input className="field" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} autoFocus required /></label>
         <label className="block space-y-1"><span className="label">Instructions for the agent</span><textarea className="field" rows={6} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></label>
@@ -134,16 +147,23 @@ function NewTask({ projectId, agents, tasks, onDone }: { projectId: string; agen
           <label className="block space-y-1"><span className="label">Priority</span>
             <select className="field" value={f.priority} onChange={(e) => setF({ ...f, priority: Number(e.target.value) })}>{PRIO.map((p, i) => <option key={p} value={i}>{p}</option>)}</select></label>
         </div>
-        <div className="space-y-1"><span className="label">Difficulty</span>
-          <div className="grid grid-cols-3 gap-2">
-            {DIFFS.map(([d, th]) => (
-              <button type="button" key={d} onClick={() => setF({ ...f, difficulty: d })}
-                className={`rounded-md border px-3 py-2 text-left transition-colors ${f.difficulty === d ? DIFF_TONE[d] + ' bg-raise' : 'border-line text-dim hover:border-line-strong'}`}>
-                <div className="text-[12.5px] capitalize">{d} <span className="text-faint">{th}</span></div>
-                <div className="font-mono text-[10.5px] text-faint">{modelFor({ difficulty: d })}</div>
-              </button>
-            ))}
-          </div>
+        <div className="space-y-1"><span className="label">Difficulty → model</span>
+          {fixed ? (
+            <div className="rounded-md border border-kin/30 px-3 py-2 text-[12px] text-kin">
+              {assignee.role} always runs on <span className="font-mono">{assignee.model}</span> — difficulty does not apply.
+            </div>
+          ) : (
+            <div className="grid grid-cols-4 gap-2">
+              {DIFF_OPTIONS.map(([d, th]) => (
+                <button type="button" key={d || 'auto'} onClick={() => setF({ ...f, difficulty: d })}
+                  className={`rounded-md border px-3 py-2 text-left transition-colors ${f.difficulty === d ? (d ? DIFF_TONE[d] : 'border-fg/40 text-fg') + ' bg-raise' : 'border-line text-dim hover:border-line-strong'}`}>
+                  <div className="text-[12.5px] capitalize">{d || 'auto'} <span className="text-faint">{th}</span></div>
+                  <div className="font-mono text-[10.5px] text-faint">{d ? modelFor({ difficulty: d }) : 'leader rates it'}</div>
+                </button>
+              ))}
+            </div>
+          )}
+          {!fixed && <div className="text-[11px] text-faint">If the agent finds it harder than expected, it moves up a level and continues the same conversation.</div>}
         </div>
         {tasks.length > 0 && <label className="block space-y-1"><span className="label">Depends on</span>
           <select multiple className="field h-28 py-1" value={f.dependsOn} onChange={(e) => setF({ ...f, dependsOn: [...e.target.selectedOptions].map((o) => o.value) })}>
@@ -190,7 +210,7 @@ function TaskDrawer({ id, agents, allTasks, onClose, onChange }: { id: string; a
                   <button key={d} disabled={t.status === 'RUNNING'} onClick={() => act(() => api('PATCH', `/api/tasks/${id}`, { difficulty: d }))}
                     className={`rounded border px-2 py-0.5 text-[11.5px] capitalize disabled:opacity-40 ${t.difficulty === d ? DIFF_TONE[d] + ' bg-raise' : 'border-line text-dim hover:text-fg'}`}>{d}</button>
                 ))}
-                <span className="ml-1 font-mono text-[11px] text-faint">→ {modelFor(t) ?? '—'}</span>
+                <span className="ml-1 font-mono text-[11px] text-faint">→ {modelFor(t) ?? 'leader assesses on run'}</span>
               </div>
             </Kv>
             <Kv k="Attempts">{t.attempts}</Kv>

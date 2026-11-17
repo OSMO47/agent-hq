@@ -5,12 +5,12 @@ import type { RuntimeAdapter, RunHandle, RuntimeEvent, RunSpec } from './types.t
 export type SessionStatus = 'queued' | 'starting' | 'running' | 'completed' | 'failed' | 'stopped' | 'timeout' | 'interrupted';
 
 export interface SessionRow {
-  id: string; agent_id: string; task_id: string | null; claude_session_id: string | null; status: SessionStatus;
+  id: string; agent_id: string; task_id: string | null; purpose: string; claude_session_id: string | null; status: SessionStatus;
   model: string | null; pid: number | null; prompt: string; result_text: string | null; error: string | null;
   cost_usd_estimate: number | null; input_tokens: number | null; output_tokens: number | null; num_turns: number | null;
 }
 
-export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec; actor: string }
+export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec; actor: string; purpose?: 'work' | 'assess' | 'message' }
 
 /**
  * Owns every live Claude process. Enforces the concurrency limit, timeouts, stop / stop-all,
@@ -40,8 +40,8 @@ export class SessionManager extends EventEmitter {
 
   enqueue(input: EnqueueInput): string {
     const id = newId('ses');
-    this.db.prepare("INSERT INTO sessions (id, agent_id, task_id, status, model, prompt, spec) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
-      .run(id, input.agentId, input.taskId ?? null, input.spec.model, input.spec.prompt, JSON.stringify(input.spec));
+    this.db.prepare("INSERT INTO sessions (id, agent_id, task_id, purpose, status, model, prompt, spec) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)")
+      .run(id, input.agentId, input.taskId ?? null, input.purpose ?? 'work', input.spec.model, input.spec.prompt, JSON.stringify(input.spec));
     audit(this.db, input.actor, 'session.enqueue', id, { agentId: input.agentId, taskId: input.taskId });
     this.emit('status', id, 'queued');
     this.pump();

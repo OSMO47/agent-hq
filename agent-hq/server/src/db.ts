@@ -24,6 +24,14 @@ function migrate(db: DB) {
   if (hasTable('tasks') && !cols('tasks').includes('difficulty')) {
     db.exec("ALTER TABLE tasks ADD COLUMN difficulty TEXT CHECK (difficulty IN ('easy','medium','hard'))");
   }
+  if (hasTable('agents') && !cols('agents').includes('model_mode')) {
+    db.exec("ALTER TABLE agents ADD COLUMN model_mode TEXT NOT NULL DEFAULT 'difficulty' CHECK (model_mode IN ('difficulty','fixed'))");
+    // Owner rule: design work is always opus.
+    db.exec("UPDATE agents SET model = 'opus', model_mode = 'fixed' WHERE id IN ('prod-dir','ui-ux-designer','ux-researcher')");
+  }
+  if (hasTable('sessions') && !cols('sessions').includes('purpose')) {
+    db.exec("ALTER TABLE sessions ADD COLUMN purpose TEXT NOT NULL DEFAULT 'work'");
+  }
 }
 
 export const newId = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;

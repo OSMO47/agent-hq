@@ -38,7 +38,7 @@ test('overview + org reflect real seeded data', async () => {
 
 test('full task flow: create → assign → run → session completes → REVIEW → DONE', async () => {
   const p = (await api('POST', '/api/projects', { name: 'Demo' })).body;
-  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Write hello.txt' })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Write hello.txt', difficulty: 'hard' })).body;
   assert.equal(t.status, 'BACKLOG');
   assert.equal((await api('POST', `/api/tasks/${t.id}/run`)).status, 400, 'cannot run without assignee');
 
@@ -97,9 +97,110 @@ test('task difficulty picks the model via owner policy', async () => {
   assert.equal(await mk('easy'), 'haiku');
   assert.equal(await mk('medium'), 'sonnet');
   assert.equal(await mk('hard'), 'opus');
-  assert.equal(await mk(undefined), 'opus', 'no difficulty -> agent model');
   assert.equal((await api('PUT', '/api/policies/models.byDifficulty', { value: { easy: 'gpt-4', medium: 'sonnet', hard: 'opus' } })).status, 400);
   assert.equal((await api('PUT', '/api/policies/models.byDifficulty', { value: { easy: 'sonnet', medium: 'opus', hard: 'opus' } })).status, 200);
   assert.equal(await mk('easy'), 'sonnet');
   assert.equal((await api('PUT', '/api/policies/runtime.maxConcurrentSessions', { value: -1 })).status, 400);
+});
+
+const done = (r: any, text: string, extra: object = {}) => {
+  r.emit({ kind: 'init', claudeSessionId: extra['cid' as keyof object] ?? 'cid', model: r.spec.model, tools: [] });
+  r.emit({ kind: 'result', ok: true, subtype: 'success', text, claudeSessionId: extra['cid' as keyof object] ?? 'cid', numTurns: 1, costUsdEstimate: 0, inputTokens: 1, outputTokens: 1, permissionDenials: [], ...extra });
+  r.exit(0);
+};
+const settle = async () => { for (let i = 0; i < 4; i++) await tick(); };
+
+test('no difficulty → department leader assesses (no tools), then work runs on the assessed model', async () => {
+  await api('PUT', '/api/policies/models.byDifficulty', { value: { easy: 'haiku', medium: 'sonnet', hard: 'opus' } });
+  const p = (await api('POST', '/api/projects', { name: 'A' })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Fix typo in README', assigneeId: 'technical-writer' })).body;
+  const sid = (await api('POST', `/api/tasks/${t.id}/run`)).body.sessionId;
+  const assess = ad.runs.at(-1)!;
+  const sess = (await api('GET', `/api/sessions/${sid}`)).body.session;
+  assert.equal(sess.purpose, 'assess');
+  assert.equal(sess.agent_id, 'docs-dir', 'the assignee\'s department leader assesses');
+  assert.deepEqual(assess.spec.tools, []);
+  assert.equal(assess.spec.model, 'sonnet');
+
+  done(assess, 'Sure.\n{"difficulty":"easy","reason":"one-line docs change"}');
+  await settle();
+  const work = ad.runs.at(-1)!;
+  assert.notEqual(work, assess);
+  assert.equal(work.spec.model, 'haiku');
+  const d = (await api('GET', `/api/tasks/${t.id}`)).body;
+  assert.equal(d.task.difficulty, 'easy');
+  assert.equal(d.task.status, 'RUNNING');
+  assert.match(d.comments.at(-1).body, /Assessed difficulty: easy/);
+  work.exit(1); await settle();
+});
+
+test('unreadable assessment defaults to medium', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'A2' })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'x', assigneeId: 'technical-writer' })).body;
+  await api('POST', `/api/tasks/${t.id}/run`);
+  done(ad.runs.at(-1)!, 'I think it is fine');
+  await settle();
+  assert.equal(ad.runs.at(-1)!.spec.model, 'sonnet');
+  ad.runs.at(-1)!.exit(1); await settle();
+});
+
+test('design agents are fixed on opus: no assessment, difficulty ignored', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'UI' })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Landing page', assigneeId: 'ui-ux-designer', difficulty: 'easy' })).body;
+  const sid = (await api('POST', `/api/tasks/${t.id}/run`)).body.sessionId;
+  assert.equal((await api('GET', `/api/sessions/${sid}`)).body.session.purpose, 'work');
+  assert.equal(ad.runs.at(-1)!.spec.model, 'opus');
+  assert.doesNotMatch(ad.runs.at(-1)!.spec.prompt, /ESCALATE/, 'fixed-model agents are never escalated');
+  ad.runs.at(-1)!.exit(1); await settle();
+  const org = (await api('GET', '/api/org')).body.agents;
+  for (const id of ['prod-dir', 'ui-ux-designer', 'ux-researcher']) {
+    const a = org.find((x: any) => x.id === id);
+    assert.deepEqual([a.model, a.model_mode], ['opus', 'fixed'], id);
+  }
+});
+
+test('ESCALATE line → difficulty +1, same conversation resumes on the stronger model', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'E' })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Add caching', assigneeId: 'backend-developer', difficulty: 'easy' })).body;
+  await api('POST', `/api/tasks/${t.id}/run`);
+  const first = ad.runs.at(-1)!;
+  assert.equal(first.spec.model, 'haiku');
+  assert.match(first.spec.prompt, /ESCALATE:/);
+  done(first, 'Looked around.\nESCALATE: needs cache invalidation design', { cid: 'conv-E' });
+  await settle();
+
+  const second = ad.runs.at(-1)!;
+  assert.equal(second.spec.model, 'sonnet');
+  assert.equal(second.spec.resumeSessionId, 'conv-E');
+  let d = (await api('GET', `/api/tasks/${t.id}`)).body;
+  assert.equal(d.task.difficulty, 'medium');
+  assert.equal(d.task.status, 'RUNNING', 'escalation does not go through REVIEW');
+  assert.match(d.comments.at(-1).body, /Escalated easy → medium \(haiku → sonnet\)/);
+
+  // running out of turns also escalates
+  second.emit({ kind: 'init', claudeSessionId: 'conv-E', model: 'sonnet', tools: [] });
+  second.emit({ kind: 'result', ok: false, subtype: 'error_max_turns', text: '', claudeSessionId: 'conv-E', numTurns: 30, costUsdEstimate: 0, inputTokens: 1, outputTokens: 1, permissionDenials: [] });
+  second.exit(1);
+  await settle();
+  const third = ad.runs.at(-1)!;
+  assert.equal(third.spec.model, 'opus');
+  assert.doesNotMatch(third.spec.prompt, /ESCALATE/, 'nothing above hard');
+
+  // at hard, an ESCALATE line is just a normal completion
+  done(third, 'Done.\nESCALATE: still hard', { cid: 'conv-E' });
+  await settle();
+  d = (await api('GET', `/api/tasks/${t.id}`)).body;
+  assert.equal(d.task.status, 'REVIEW');
+});
+
+test('auto-escalation can be turned off by the owner', async () => {
+  assert.equal((await api('PUT', '/api/policies/models.autoEscalate', { value: false })).status, 200);
+  const p = (await api('POST', '/api/projects', { name: 'E2' })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'x', assigneeId: 'backend-developer', difficulty: 'easy' })).body;
+  await api('POST', `/api/tasks/${t.id}/run`);
+  assert.doesNotMatch(ad.runs.at(-1)!.spec.prompt, /ESCALATE/);
+  done(ad.runs.at(-1)!, 'ESCALATE: hard');
+  await settle();
+  assert.equal((await api('GET', `/api/tasks/${t.id}`)).body.task.status, 'REVIEW');
+  await api('PUT', '/api/policies/models.autoEscalate', { value: true });
 });

@@ -15,6 +15,8 @@ export const PERMISSIONS = {
 export const DEFAULT_POLICIES: Record<string, unknown> = {
   'runtime.defaultModel': 'opus',
   'models.byDifficulty': { easy: 'haiku', medium: 'sonnet', hard: 'opus' },
+  'models.assessment': 'sonnet',      // model leaders use to rate task difficulty (no tools, ~4k tokens)
+  'models.autoEscalate': true,          // harder than expected -> next difficulty, same conversation
   'runtime.maxConcurrentSessions': 2,
   'runtime.sessionTimeoutMs': 20 * 60_000,
   'runtime.maxTurnsPerSession': 30,
@@ -79,6 +81,8 @@ export function seed(db: DB): boolean {
         `You are a ${role}. Complete the assigned task inside your workspace, keep changes focused, and finish with a short report: what you did, files changed, open issues.`,
         JSON.stringify(PERMISSIONS[preset]));
     }
+    // Owner rule: design / UX / UI work always runs on opus, regardless of difficulty.
+    db.prepare("UPDATE agents SET model = 'opus', model_mode = 'fixed' WHERE id IN ('prod-dir', 'ui-ux-designer', 'ux-researcher')").run();
     db.prepare(`INSERT INTO memories (scope, key, content, protected, updated_by) VALUES ('global', 'policy.owner-authority', ?, 1, 'system')`)
       .run('The human owner has final authority. Agents may request, never self-approve, permissions, recruitment or policy changes.');
     audit(db, 'system', 'org.seed', null, { departments: DEPARTMENTS.length, specialists: SPECIALISTS.length });
