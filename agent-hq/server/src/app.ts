@@ -1,0 +1,207 @@
+import express, { type Request, type Response, type NextFunction } from 'express';
+import { createServer, type Server } from 'node:http';
+import os from 'node:os';
+import { WebSocketServer, WebSocket } from 'ws';
+import { type DB, newId, audit, getPolicy, setPolicy } from './db.ts';
+import { createTask, transition, getTask, addDependency, TaskError, type TaskStatus } from './domain/tasks.ts';
+import type { SessionManager } from './runtime/sessionManager.ts';
+import { TaskRunner, buildSpec } from './domain/taskRunner.ts';
+
+const OWNER = 'owner';
+const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
+  'runtime.defaultModel', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents']);
+
+type Handler = (req: Request, res: Response) => unknown;
+const h = (fn: Handler) => async (req: Request, res: Response, next: NextFunction) => {
+  try { const out = await fn(req, res); if (!res.headersSent) res.json(out ?? { ok: true }); }
+  catch (e) { next(e); }
+};
+
+/** Builds the HTTP + WS server. Local-only: rejects foreign Host/Origin headers (DNS-rebinding guard). */
+export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; port: number; staticDir?: string }) {
+  const runner = new TaskRunner(db, sm, opts.dataDir);
+  const app = express();
+  const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (!allowedHosts.has(req.headers.host ?? '') || (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, '')) && !/^http:\/\/(localhost|127\.0\.0\.1):5173$/.test(origin))) {
+      res.status(403).json({ error: 'forbidden host' }); return;
+    }
+    next();
+  });
+  app.use(express.json({ limit: '1mb' }));
+
+  const all = (sql: string, ...p: any[]) => db.prepare(sql).all(...p);
+  const one = (sql: string, ...p: any[]) => db.prepare(sql).get(...p);
+
+  // ---------- Overview ----------
+  app.get('/api/overview', h(() => {
+    const agents = one(`SELECT COUNT(*) total, SUM(status='active') active, SUM(status='suspended') suspended FROM agents`) as any;
+    const busy = one(`SELECT COUNT(DISTINCT agent_id) n FROM sessions WHERE status IN ('starting','running')`) as any;
+    const failedAgents = one(`SELECT COUNT(DISTINCT agent_id) n FROM sessions WHERE status IN ('failed','timeout') AND ended_at > datetime('now','-1 day')`) as any;
+    const tasks = Object.fromEntries((all('SELECT status, COUNT(*) n FROM tasks GROUP BY status') as any[]).map((r) => [r.status, r.n]));
+    const sessions = Object.fromEntries((all('SELECT status, COUNT(*) n FROM sessions GROUP BY status') as any[]).map((r) => [r.status, r.n]));
+    const cpus = os.cpus();
+    return {
+      agents: { total: agents.total, active: agents.active, suspended: agents.suspended, busy: busy.n, idle: agents.active - busy.n, failedLast24h: failedAgents.n },
+      tasks, sessions,
+      pendingApprovals: (one("SELECT COUNT(*) n FROM approvals WHERE status='pending'") as any).n,
+      pendingRecruitment: (one("SELECT COUNT(*) n FROM recruitment_requests WHERE status IN ('pending_ceo','pending_owner')") as any).n,
+      system: { cpuCount: cpus.length, loadAvg: os.loadavg(), cpuModel: cpus[0]?.model, totalMem: os.totalmem(), freeMem: os.freemem(), uptime: os.uptime() },
+      claude: { lastRateLimit: sm.lastRateLimit, rateLimitedUntil: sm.rateLimitedUntil || null,
+        costEstimateTodayUsd: (one("SELECT SUM(cost_usd_estimate) c FROM sessions WHERE queued_at > datetime('now','start of day')") as any).c },
+      paused: getPolicy(db, 'org.paused', false),
+      recentActivity: all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 30'),
+    };
+  }));
+
+  // ---------- Organization ----------
+  app.get('/api/org', h(() => ({
+    departments: all('SELECT * FROM departments ORDER BY rowid'),
+    agents: all(`SELECT a.*, s.id session_id, s.status session_status, s.task_id current_task_id, t.title current_task
+                 FROM agents a
+                 LEFT JOIN sessions s ON s.id = (SELECT id FROM sessions WHERE agent_id = a.id AND status IN ('queued','starting','running') ORDER BY queued_at DESC LIMIT 1)
+                 LEFT JOIN tasks t ON t.id = s.task_id ORDER BY a.level, a.rowid`),
+  })));
+  app.patch('/api/agents/:id', h((req) => {
+    const a = one('SELECT * FROM agents WHERE id = ?', req.params.id) as any;
+    if (!a) throw new TaskError('agent not found');
+    const { model, status, instructions, permissions } = req.body ?? {};
+    if (status && !['active', 'suspended', 'inactive'].includes(status)) throw new TaskError('bad status');
+    db.prepare('UPDATE agents SET model = COALESCE(?, model), status = COALESCE(?, status), instructions = COALESCE(?, instructions), permissions = COALESCE(?, permissions) WHERE id = ?')
+      .run(model ?? null, status ?? null, instructions ?? null, permissions ? JSON.stringify(permissions) : null, a.id);
+    audit(db, OWNER, 'agent.update', a.id, req.body);
+    if (status === 'suspended') for (const s of all("SELECT id FROM sessions WHERE agent_id = ? AND status IN ('queued','starting','running')", a.id) as any[]) sm.stop(s.id, OWNER);
+    broadcast({ type: 'org' });
+    return one('SELECT * FROM agents WHERE id = ?', a.id);
+  }));
+
+  // ---------- Projects & tasks ----------
+  app.get('/api/projects', h(() => all('SELECT * FROM projects ORDER BY created_at DESC')));
+  app.post('/api/projects', h((req) => {
+    const { name, description = '', repoPath = null } = req.body ?? {};
+    if (!name) throw new TaskError('name required');
+    const id = newId('proj');
+    db.prepare('INSERT INTO projects (id, name, description, repo_path) VALUES (?, ?, ?, ?)').run(id, name, description, repoPath);
+    audit(db, OWNER, 'project.create', id, { name });
+    return one('SELECT * FROM projects WHERE id = ?', id);
+  }));
+  app.get('/api/tasks', h((req) => {
+    const pid = req.query.projectId as string | undefined;
+    return {
+      tasks: pid ? all('SELECT * FROM tasks WHERE project_id = ? ORDER BY priority, created_at', pid) : all('SELECT * FROM tasks ORDER BY priority, created_at'),
+      dependencies: all('SELECT * FROM task_dependencies'),
+    };
+  }));
+  app.get('/api/tasks/:id', h((req) => {
+    const t = getTask(db, req.params.id as string);
+    if (!t) throw new TaskError('task not found');
+    return { task: t, history: all('SELECT * FROM task_history WHERE task_id = ? ORDER BY id', t.id),
+      comments: all('SELECT * FROM task_comments WHERE task_id = ? ORDER BY id', t.id),
+      sessions: all('SELECT id, status, agent_id, queued_at, ended_at, error FROM sessions WHERE task_id = ? ORDER BY queued_at DESC', t.id) };
+  }));
+  app.post('/api/tasks', h((req) => {
+    const b = req.body ?? {};
+    if (!b.projectId || !b.title) throw new TaskError('projectId and title required');
+    const t = createTask(db, { ...b, actor: OWNER });
+    broadcast({ type: 'task', task: t });
+    return t;
+  }));
+  app.patch('/api/tasks/:id', h((req) => {
+    const id = req.params.id as string;
+    const { assigneeId, priority, title, description, dependsOn } = req.body ?? {};
+    const t = getTask(db, id);
+    if (!t) throw new TaskError('task not found');
+    if (t.status === 'RUNNING' && assigneeId !== undefined) throw new TaskError('cannot reassign a running task');
+    db.prepare('UPDATE tasks SET assignee_id = COALESCE(?, assignee_id), priority = COALESCE(?, priority), title = COALESCE(?, title), description = COALESCE(?, description), updated_at = datetime(\'now\') WHERE id = ?')
+      .run(assigneeId ?? null, priority ?? null, title ?? null, description ?? null, id);
+    for (const d of dependsOn ?? []) addDependency(db, id, d);
+    if (assigneeId && ['BACKLOG', 'PLANNED'].includes(t.status)) transition(db, id, 'ASSIGNED', OWNER, `assigned to ${assigneeId}`);
+    audit(db, OWNER, 'task.update', id, req.body);
+    const out = getTask(db, id);
+    broadcast({ type: 'task', task: out });
+    return out;
+  }));
+  app.post('/api/tasks/:id/transition', h((req) => {
+    const t = transition(db, req.params.id as string, req.body?.to as TaskStatus, OWNER, req.body?.note ?? '');
+    if (t.status === 'DONE') db.prepare("UPDATE tasks SET review_status = 'approved' WHERE id = ?").run(t.id);
+    if (req.body?.to === 'ASSIGNED' && req.body?.note) db.prepare('INSERT INTO task_comments (task_id, author, body) VALUES (?, ?, ?)').run(t.id, OWNER, req.body.note);
+    broadcast({ type: 'task', task: getTask(db, t.id) });
+    return getTask(db, t.id);
+  }));
+  app.post('/api/tasks/:id/comments', h((req) => {
+    if (!req.body?.body) throw new TaskError('body required');
+    db.prepare('INSERT INTO task_comments (task_id, author, body) VALUES (?, ?, ?)').run(req.params.id, OWNER, req.body.body);
+    return { ok: true };
+  }));
+  app.post('/api/tasks/:id/run', h((req) => {
+    const sessionId = runner.run(req.params.id as string, OWNER);
+    broadcast({ type: 'task', task: getTask(db, req.params.id as string) });
+    return { sessionId };
+  }));
+
+  // ---------- Sessions ----------
+  app.get('/api/sessions', h(() => all(`SELECT s.id, s.agent_id, a.name agent_name, a.role, s.task_id, t.title task_title, s.status, s.model,
+      s.claude_session_id, s.error, s.cost_usd_estimate, s.input_tokens, s.output_tokens, s.num_turns, s.queued_at, s.started_at, s.ended_at
+      FROM sessions s JOIN agents a ON a.id = s.agent_id LEFT JOIN tasks t ON t.id = s.task_id ORDER BY s.queued_at DESC LIMIT 200`)));
+  app.get('/api/sessions/:id', h((req) => {
+    const s = sm.get(req.params.id as string);
+    if (!s) throw new TaskError('session not found');
+    return { session: s, events: all('SELECT id, kind, data, created_at FROM session_events WHERE session_id = ? ORDER BY id', s.id).map((e: any) => ({ ...e, data: JSON.parse(e.data) })) };
+  }));
+  app.post('/api/sessions/:id/stop', h((req) => { sm.stop(req.params.id as string, OWNER); return { ok: true }; }));
+  /** Follow-up instruction: new session resuming the same Claude conversation. */
+  app.post('/api/sessions/:id/message', h((req) => {
+    const s = sm.get(req.params.id as string);
+    if (!s?.claude_session_id) throw new TaskError('session has no Claude conversation to resume yet');
+    if (['queued', 'starting', 'running'].includes(s.status)) throw new TaskError('session is still running');
+    const agent = one('SELECT * FROM agents WHERE id = ?', s.agent_id) as any;
+    const prev = JSON.parse((one('SELECT spec FROM sessions WHERE id = ?', s.id) as any).spec);
+    const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30)), resumeSessionId: s.claude_session_id };
+    if (!spec.prompt) throw new TaskError('text required');
+    return { sessionId: sm.enqueue({ agentId: agent.id, actor: OWNER, spec }) };
+  }));
+
+  // ---------- Owner command center ----------
+  app.post('/api/owner/stop-all', h(() => ({ stopped: sm.stopAll(OWNER) })));
+  app.post('/api/owner/pause', h((req) => {
+    const paused = !!req.body?.paused;
+    setPolicy(db, 'org.paused', paused, OWNER);
+    if (!paused) sm.pump();
+    broadcast({ type: 'paused', paused });
+    return { paused };
+  }));
+  app.get('/api/policies', h(() => all('SELECT * FROM policies ORDER BY key').map((p: any) => ({ ...p, value: JSON.parse(p.value) }))));
+  app.put('/api/policies/:key', h((req) => {
+    const key = req.params.key as string;
+    if (!EDITABLE_POLICIES.has(key)) throw new TaskError(`policy ${key} is not editable here`);
+    setPolicy(db, key, req.body?.value, OWNER);
+    sm.pump();
+    return { key, value: req.body?.value };
+  }));
+  app.get('/api/audit', h(() => all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 500')));
+
+  if (opts.staticDir) {
+    app.use(express.static(opts.staticDir));
+    app.get(/^\/(?!api|ws).*/, (_req, res) => res.sendFile('index.html', { root: opts.staticDir }));
+  }
+
+  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    const userError = err instanceof TaskError || /constraint|FOREIGN KEY/i.test(err.message);
+    res.status(userError ? 400 : 500).json({ error: err.message });
+  });
+
+  // ---------- WebSocket: live push ----------
+  const server: Server = createServer(app);
+  const wss = new WebSocketServer({ server, path: '/ws',
+    verifyClient: ({ req }: { req: import('node:http').IncomingMessage }) => allowedHosts.has(req.headers.host ?? '') });
+  function broadcast(msg: object) {
+    const data = JSON.stringify(msg);
+    for (const c of wss.clients) if (c.readyState === WebSocket.OPEN) c.send(data);
+  }
+  sm.on('event', (sessionId: string, event: unknown) => broadcast({ type: 'session.event', sessionId, event }));
+  sm.on('status', (sessionId: string, status: string) => broadcast({ type: 'session.status', sessionId, status }));
+  sm.on('limited', (until: number) => broadcast({ type: 'limited', until }));
+
+  return { app, server, wss, broadcast, runner };
+}

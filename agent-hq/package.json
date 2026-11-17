@@ -4,9 +4,15 @@
   "private": true,
   "description": "Local-first, Claude-only AI organization manager",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "node --test --test-reporter=spec \"server/test/*.test.ts\"",
     "test:live": "node server/test/live-claude.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.21.0"
   }
 }
