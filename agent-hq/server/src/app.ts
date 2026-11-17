@@ -9,7 +9,7 @@ import { TaskRunner, buildSpec, projectWorkspace } from './domain/taskRunner.ts'
 import { readyTasks } from './domain/tasks.ts';
 import { CeoPlanner, gitDirty } from './domain/ceoPlanner.ts';
 import { deleteProject, projectFootprint } from './domain/projects.ts';
-import { Deployer, finishedProjects } from './domain/deploy.ts';
+import { Deployer, finishedProjects, gitTarget, suggestDeployCommand } from './domain/deploy.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
@@ -275,13 +275,21 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     }
     for (const f of finished) {
       items.unshift({ kind: 'finished', task: { id: f.project.id, title: f.project.name, updated_at: f.done.at(-1)?.updated_at }, project: f.project,
-        done: f.done, command: f.command, git: f.project.repo_path ? gitDirty(f.project.repo_path) : null, deploy: deployer.state(f.project.id) });
+        done: f.done, command: f.command, git: gitTarget(f.project.repo_path), deploy: deployer.state(f.project.id) });
     }
     return items;
   }
   app.get('/api/inbox', h(() => inbox()));
   /** Owner-only publish: runs the project's deploy command (optionally committing first). */
-  app.post('/api/projects/:id/deploy', h((req) => deployer.start(req.params.id as string, { command: String(req.body?.command ?? ''), commit: !!req.body?.commit, actor: OWNER })));
+  app.post('/api/projects/:id/deploy', h((req) => deployer.start(req.params.id as string, { command: String(req.body?.command ?? ''), commit: !!req.body?.commit, push: !!req.body?.push, deploy: req.body?.deploy !== false && !!req.body?.command, actor: OWNER })));
+  /** Same data as the Inbox "finished" card, available anytime (manual publish from the Task board). */
+  app.get('/api/projects/:id/publish', h((req) => {
+    const p = one('SELECT * FROM projects WHERE id = ?', req.params.id) as any;
+    if (!p) throw new TaskError('project not found');
+    const f = finishedProjects(db).find((x) => x.project.id === p.id);
+    return { kind: 'finished', task: { id: p.id, title: p.name, updated_at: null }, project: p, done: f?.done ?? [],
+      command: p.deploy_cmd ?? suggestDeployCommand(p.repo_path), git: gitTarget(p.repo_path), deploy: deployer.state(p.id) };
+  }));
   app.get('/api/projects/:id/deploy', h((req) => deployer.state(req.params.id as string)));
   app.post('/api/projects/:id/deploy/dismiss', h((req) => { deployer.dismiss(req.params.id as string); return { ok: true }; }));
   app.post('/api/projects/:id/deploy/skip', h((req) => { deployer.skip(req.params.id as string, OWNER); return { ok: true }; }));

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, useResource, NEXT, ago } from '../api';
 import { Drawer, Empty, Kv, Status, Dot } from '../ui';
+import { Finished } from '../Inbox';
 
 const COLUMNS = ['BACKLOG', 'PLANNED', 'ASSIGNED', 'RUNNING', 'REVIEW', 'DONE'];
 const SIDE = ['BLOCKED', 'FAILED', 'CANCELLED'];
@@ -51,7 +52,7 @@ export default function Tasks({ param }: { param?: string }) {
     else if (param) api('GET', `/api/tasks/${param}`).then((r) => { setPid(r.task.project_id); setOpenId(param); }).catch(() => {});
   }, [param]);
   const clearLink = () => { if (param) location.hash = '#/tasks'; };
-  const [creating, setCreating] = useState<'project' | 'task' | 'brief' | 'delete' | null>(null);
+  const [creating, setCreating] = useState<'project' | 'task' | 'brief' | 'delete' | 'publish' | null>(null);
   const pstat = useResource<any>(pid ? `/api/projects/${pid}/status` : null, ['project', 'task', 'session.status', 'paused']);
   const [runMsg, setRunMsg] = useState('');
 
@@ -76,6 +77,7 @@ export default function Tasks({ param }: { param?: string }) {
         </select>
         <button className="btn" onClick={() => setCreating('project')}>New project</button>
         <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from Agent HQ">Delete project</button>
+        <button className="btn" disabled={!pid} onClick={() => setCreating('publish')} title="Commit / push / deploy this project">⇡ Publish</button>
         <div className="ml-auto flex items-center gap-3 text-[11.5px] text-faint">
           {SIDE.map((s) => <span key={s} className="whitespace-nowrap"><Status s={s} /> {all.filter((t) => t.status === s).length}</span>)}
           {pstat.data?.planning && <a className="flex items-center gap-1.5 text-kin" href={`#/sessions/${pstat.data.planning.id}`}><Dot status="running" />CEO planning…</a>}
@@ -127,6 +129,7 @@ export default function Tasks({ param }: { param?: string }) {
         })}
       </div>
 
+      {creating === 'publish' && pid && <PublishDrawer id={pid} onClose={() => setCreating(null)} />}
       {creating === 'delete' && pid && <DeleteProject id={pid} onDone={(deleted) => { setCreating(null); if (deleted) { setPid(null); projects.reload(); } }} />}
       {creating === 'project' && <NewProject onDone={(id) => { setCreating(null); projects.reload(); if (id) setPid(id); }} />}
       {creating === 'brief' && pid && <CeoBrief status={pstat.data} reload={pstat.reload} projectId={pid} onClose={() => { setCreating(null); clearLink(); }} />}
@@ -137,6 +140,16 @@ export default function Tasks({ param }: { param?: string }) {
 }
 
 /** Confirm panel: shows exactly what is removed; the workspace folder on disk is never touched. */
+/** Manual publish (commit / push / deploy) for a project, using the same card as the Inbox. */
+function PublishDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+  const { data, error, reload } = useResource<any>(`/api/projects/${id}/publish`, ['deploy', 'task']);
+  return (
+    <Drawer open onClose={onClose} title="Publish">
+      {!data ? <Empty>{error ?? 'Loading…'}</Empty> : <Finished it={data} onDone={reload} />}
+    </Drawer>
+  );
+}
+
 function DeleteProject({ id, onDone }: { id: string; onDone: (deleted: boolean) => void }) {
   const { data, error } = useResource<any>(`/api/projects/${id}/footprint`, []);
   const [typed, setTyped] = useState(''); const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);

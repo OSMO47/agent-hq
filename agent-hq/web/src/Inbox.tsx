@@ -72,18 +72,34 @@ function Item({ it, agents, onDone }: { it: any; agents: any[]; onDone: () => vo
   );
 }
 
-/** "Work is done: deploy?" Only the owner can trigger this; it runs the project's own deploy command. */
-function Finished({ it, onDone }: { it: any; onDone: () => void }) {
-  const p = it.project; const st = it.deploy;
+/**
+ * "Work is done": the owner chooses what to publish. Steps run in order and stop at the first failure:
+ *   commit (files the agents changed) → push (to the branch upstream / origin, read from the project's git config) → deploy.
+ * Agents can never do any of this themselves.
+ */
+export function Finished({ it, onDone }: { it: any; onDone: () => void }) {
+  const p = it.project; const st = it.deploy; const g = it.git;
   const [cmd, setCmd] = useState(it.command ?? '');
-  const [commit, setCommit] = useState(!!it.git?.files);
+  const [commit, setCommit] = useState(!!g?.files);
+  const [push, setPush] = useState(!!g?.remote);
+  const [deploy, setDeploy] = useState(!!it.command);
   const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
   const act = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(''); try { await fn(); onDone(); } catch (e) { setErr((e as Error).message); } setBusy(false); };
+  const host = (u: string | null) => (u ?? '').replace(/^https?:\/\//, '').replace(/^git@([^:]+):/, '$1/').replace(/\.git$/, '');
+  const pending = (g?.ahead ?? 0) + (commit && g?.files ? 1 : 0);
+  const any = commit || push || deploy;
+  const label = [commit && 'commit', push && 'push', deploy && 'deploy'].filter(Boolean).join(' → ');
+  const Opt = ({ on, set, disabled, children }: { on: boolean; set: (v: boolean) => void; disabled?: boolean; children: React.ReactNode }) => (
+    <label className={`flex items-start gap-2 rounded-md border px-2.5 py-2 text-[11.5px] ${disabled ? 'border-line opacity-50' : on ? 'border-matcha/40' : 'border-line'}`}>
+      <input type="checkbox" className="mt-0.5" checked={on && !disabled} disabled={disabled} onChange={(e) => set(e.target.checked)} />
+      <span className="min-w-0 flex-1">{children}</span>
+    </label>
+  );
 
   return (
     <div className="rise rounded-lg border border-matcha/50 bg-matcha/[.05] p-3">
       <div className="flex items-center gap-2 text-[10.5px]">
-        <span className="font-bold uppercase tracking-wider text-matcha">✓ งานเสร็จแล้ว</span>
+        <span className="font-bold uppercase tracking-wider text-matcha">{it.done.length ? '✓ งานเสร็จแล้ว' : '⇡ เผยแพร่โปรเจกต์'}</span>
         <span className="ml-auto text-faint">{ago(it.task.updated_at)}</span>
       </div>
       <div className="mt-1 text-[13px]">{p.name}</div>
@@ -95,29 +111,41 @@ function Finished({ it, onDone }: { it: any; onDone: () => void }) {
 
       {!st && (
         <div className="mt-3 space-y-2">
-          <div className="text-[12px]">Deploy ขึ้นเว็บเลยไหม?</div>
-          <input className="field font-mono text-[11.5px]" value={cmd} onChange={(e) => setCmd(e.target.value)} placeholder="คำสั่ง deploy เช่น deploy.bat หรือ firebase deploy" />
-          {it.git?.files > 0 && (
-            <label className="flex items-center gap-2 text-[11.5px]"><input type="checkbox" checked={commit} onChange={(e) => setCommit(e.target.checked)} />
-              commit ไฟล์ที่แก้ ({it.git.files} ไฟล์) ก่อน deploy</label>
-          )}
+          <div className="text-[12px]">จะเผยแพร่งานนี้ไหม?</div>
+          <Opt on={commit} set={setCommit} disabled={!g || !g.files}>
+            <b>Commit</b> {g ? (g.files ? `ไฟล์ที่แก้ ${g.files} ไฟล์` : 'ไม่มีไฟล์ค้าง') : '(ไม่ใช่ git repo)'}
+          </Opt>
+          <Opt on={push} set={setPush} disabled={!g?.remote}>
+            <b>Push</b> {g?.remote ? <>
+              → <span className="text-ai">{g.remote}</span> · <span className="font-mono">{host(g.url)}</span> · branch <span className="text-accent">{g.branch}</span>
+              <div className="text-faint">{g.upstream ? `ตาม upstream ${g.upstream}` : `ยังไม่มี upstream: จะ push -u ${g.remote} ${g.branch}`}{pending > 0 && ` · ${pending} commit จะถูกส่งขึ้นไป`}</div>
+            </> : <span className="text-faint">ไม่มี git remote (เพิ่มด้วย git remote add origin &lt;url&gt;)</span>}
+          </Opt>
+          <Opt on={deploy} set={setDeploy}>
+            <b>Deploy</b> ขึ้นเว็บ
+            <input className="field mt-1.5 h-7 font-mono text-[11px]" value={cmd} onChange={(e) => setCmd(e.target.value)} onClick={(e) => e.preventDefault()}
+              placeholder="คำสั่ง deploy เช่น deploy.bat หรือ npm run deploy" />
+          </Opt>
           <div className="flex gap-2">
-            <button className="btn btn-primary flex-1" disabled={busy || !cmd.trim()} onClick={() => act(() => api('POST', `/api/projects/${p.id}/deploy`, { command: cmd, commit }))}>🚀 Deploy</button>
-            <button className="btn flex-1" disabled={busy} onClick={() => act(() => api('POST', `/api/projects/${p.id}/deploy/skip`))}>ยังไม่ deploy</button>
+            <button className="btn btn-primary flex-1" disabled={busy || !any || (deploy && !cmd.trim())}
+              onClick={() => act(() => api('POST', `/api/projects/${p.id}/deploy`, { command: cmd, commit: commit && !!g?.files, push: push && !!g?.remote, deploy }))}>
+              ▶ {label || 'เลือกอย่างน้อย 1 อย่าง'}
+            </button>
+            <button className="btn" disabled={busy} onClick={() => act(() => api('POST', `/api/projects/${p.id}/deploy/skip`))}>ยังไม่ทำ</button>
           </div>
-          <div className="text-[10.5px] text-faint">agent deploy เองไม่ได้ จะ deploy ก็ต่อเมื่อคุณกดปุ่มนี้</div>
+          <div className="text-[10.5px] text-faint">agent push / deploy เองไม่ได้ จะเกิดขึ้นเฉพาะตอนที่คุณกดปุ่มนี้</div>
         </div>
       )}
 
       {st && (
         <div className="mt-3 space-y-2">
           <div className={`text-[12px] ${st.running ? 'breathe text-kin' : st.ok ? 'text-matcha' : 'text-shu'}`}>
-            {st.running ? '● กำลัง deploy…' : st.ok ? '✓ Deploy สำเร็จ' : '✕ Deploy ไม่สำเร็จ'}
+            {st.running ? `● กำลังทำ: ${st.steps.join(' → ')}…` : st.ok ? `✓ สำเร็จ: ${st.steps.join(' → ')}` : '✕ ไม่สำเร็จ (หยุดที่ขั้นที่ผิดพลาด)'}
           </div>
           <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md bg-black/40 p-2.5 text-[10.5px] leading-relaxed text-dim">{st.output.slice(-6000)}</pre>
           {!st.running && (
             <div className="flex gap-2">
-              {!st.ok && <button className="btn flex-1" disabled={busy} onClick={() => act(() => api('POST', `/api/projects/${p.id}/deploy`, { command: st.command, commit: false }))}>↻ ลองใหม่</button>}
+              {!st.ok && <button className="btn flex-1" disabled={busy} onClick={() => act(() => api('POST', `/api/projects/${p.id}/deploy/dismiss`))}>↻ ลองใหม่</button>}
               <button className="btn flex-1" disabled={busy} onClick={() => act(() => api('POST', `/api/projects/${p.id}/deploy/dismiss`))}>ปิด</button>
             </div>
           )}
