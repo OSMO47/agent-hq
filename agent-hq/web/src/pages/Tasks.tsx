@@ -75,8 +75,7 @@ export default function Tasks({ param }: { param?: string }) {
           {projects.data.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <button className="btn" onClick={() => setCreating('project')}>New project</button>
-        <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from Agent HQ">🗑 Delete</button>
-        <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from Agent HQ">🗑 Delete</button>
+        <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from Agent HQ">Delete project</button>
         <div className="ml-auto flex items-center gap-3 text-[11.5px] text-faint">
           {SIDE.map((s) => <span key={s} className="whitespace-nowrap"><Status s={s} /> {all.filter((t) => t.status === s).length}</span>)}
           {pstat.data?.planning && <a className="flex items-center gap-1.5 text-kin" href={`#/sessions/${pstat.data.planning.id}`}><Dot status="running" />CEO planning…</a>}
@@ -307,6 +306,7 @@ function AgentSelect({ agents, value, onChange }: { agents: any[]; value: string
 
 function TaskDrawer({ id, agents, allTasks, onClose, onChange }: { id: string; agents: any[]; allTasks: any[]; onClose: () => void; onChange: () => void }) {
   const { data, reload } = useResource<any>(`/api/tasks/${id}`, ['task', 'session.status']);
+  const modelFor = useModelFor(agents);
   const [err, setErr] = useState(''); const [note, setNote] = useState('');
   const act = async (fn: () => Promise<unknown>) => { setErr(''); try { await fn(); reload(); onChange(); } catch (e) { setErr((e as Error).message); } };
   const t = data?.task;
@@ -337,6 +337,7 @@ function TaskDrawer({ id, agents, allTasks, onClose, onChange }: { id: string; a
           {t.description && <p className="whitespace-pre-wrap rounded-md border border-line bg-ink p-3 text-[12.5px] leading-relaxed text-dim">{t.description}</p>}
 
           <div className="flex flex-wrap gap-2">
+            {!t.assignee_id && ['BACKLOG', 'PLANNED', 'BLOCKED'].includes(t.status) && <div className="w-full text-[12px] text-kin">Pick an Assignee above: the ▶ Run button appears once someone owns the task.</div>}
             {t.status === 'ASSIGNED' && <button className="btn btn-primary" onClick={() => act(() => api('POST', `/api/tasks/${id}/run`))}>▶ Run with Claude</button>}
             {t.status === 'RUNNING' && t.lock_session && <>
               <a className="btn" href={`#/sessions/${t.lock_session}`}>Watch live</a>

@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import { api, useConnected, useResource, useLive, ago } from './api';
-import { Empty, Status } from './ui';
+import { Empty, Status, ErrorBoundary } from './ui';
 import Overview from './pages/Overview';
 import Organization from './pages/Organization';
 import Tasks from './pages/Tasks';
@@ -79,7 +79,7 @@ function App() {
       <div className="flex min-h-0 min-w-0 flex-col">
         <CenterHeader agent={agent} org={org.data} page={page} ov={ov.data} reloadOv={ov.reload} onToast={setToast} right={right} setRight={setRight} />
         <main className="min-h-0 flex-1 overflow-auto">
-          <Page param={param} overview={ov.data} />
+          <ErrorBoundary key={route}><Page param={param} overview={ov.data} /></ErrorBoundary>
         </main>
       </div>
 

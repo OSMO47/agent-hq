@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { Component, type ReactNode } from 'react';
 
 const DOT: Record<string, string> = {
   running: 'bg-matcha', starting: 'bg-matcha', queued: 'bg-kin', completed: 'bg-ai', failed: 'bg-shu', timeout: 'bg-shu',
@@ -68,3 +68,20 @@ export const Meter = ({ value, tone = 'bg-fg' }: { value: number; tone?: string 
     <div className={`h-full rounded-full ${tone} transition-[width] duration-500`} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
   </div>
 );
+
+/** Contains a crash to one area and shows what broke, instead of blanking the whole app. */
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error) { console.error('[hq] view crashed:', error); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="m-5 rounded-lg border border-shu/40 p-4 text-[12px]">
+        <div className="mb-1 text-shu">This view hit an error and was stopped.</div>
+        <pre className="whitespace-pre-wrap text-faint">{String(this.state.error.message)}</pre>
+        <button className="btn mt-3" onClick={() => this.setState({ error: null })}>Try again</button>
+      </div>
+    );
+  }
+}
