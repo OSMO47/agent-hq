@@ -87,3 +87,19 @@ test('autopilot respects pause and can be switched off', async () => {
   runner.autoPilot(); await settle();
   assert.equal(ad.runs.length, 0);
 });
+
+test('work sessions run in Claude Code auto mode by default; owner can switch to default; deny rules stay', async () => {
+  const { db, ad, runner } = setup();
+  const { buildClaudeArgs } = await import('../src/runtime/claudeCliAdapter.ts');
+  createTask(db, { projectId: 'p1', title: 'a', assigneeId: 'frontend-developer', difficulty: 'easy', actor: 'owner' });
+  runner.autoPilot(); await settle();
+  const args = buildClaudeArgs(ad.runs[0].spec);
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'auto');
+  assert.ok(ad.runs[0].spec.disallowedTools!.includes('Bash(git push:*)'));
+  assert.ok(!args.includes('bypassPermissions'));
+
+  setPolicy(db, 'runtime.permissionMode', 'default', 'test');
+  createTask(db, { projectId: 'p1', title: 'b', assigneeId: 'backend-developer', difficulty: 'easy', actor: 'owner' });
+  runner.autoPilot(); await settle();
+  assert.equal(ad.runs.at(-1)!.spec.permissionMode, 'default');
+});

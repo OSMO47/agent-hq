@@ -21,6 +21,8 @@ export const DEFAULT_POLICIES: Record<string, unknown> = {
   'runtime.sessionTimeoutMs': 20 * 60_000,
   'runtime.maxTurnsPerSession': 30,
   'org.paused': false,
+  'org.autoPilot': true,               // CEO assigns, ready work starts, clean results auto-approve
+  'runtime.permissionMode': 'auto',    // Claude Code auto mode for work sessions; deny rules still win
   'recruitment.requiresOwnerApproval': true,
   'recruitment.maxAgents': 40,
 };

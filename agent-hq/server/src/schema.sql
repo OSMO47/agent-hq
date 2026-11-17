@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS projects (
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   repo_path   TEXT,
+  deploy_cmd  TEXT,                       -- owner-approved publish command (agents can never run it)
+  deploy_decided_at TEXT,                 -- last time the owner deployed or skipped; DONE work after this is 'new'
   status      TEXT NOT NULL DEFAULT 'active',
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );

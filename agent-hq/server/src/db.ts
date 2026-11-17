@@ -32,6 +32,10 @@ function migrate(db: DB) {
   if (hasTable('sessions') && !cols('sessions').includes('purpose')) {
     db.exec("ALTER TABLE sessions ADD COLUMN purpose TEXT NOT NULL DEFAULT 'work'");
   }
+  if (hasTable('projects') && !cols('projects').includes('deploy_cmd')) {
+    db.exec('ALTER TABLE projects ADD COLUMN deploy_cmd TEXT');
+    db.exec('ALTER TABLE projects ADD COLUMN deploy_decided_at TEXT');
+  }
   if (hasTable('sessions') && !cols('sessions').includes('project_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)');
   }

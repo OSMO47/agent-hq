@@ -69,6 +69,30 @@ function App() {
     addEventListener('keydown', f); return () => removeEventListener('keydown', f);
   }, []);
 
+  // Tell the owner when work is finished (deploy?) or someone needs a decision: popup + desktop notification + tab title.
+  const inboxAll = useResource<any[]>('/api/inbox', ['task', 'session.status', 'deploy', 'project']);
+  const seen = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const ask = () => { try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch { /* unsupported */ } };
+    addEventListener('pointerdown', ask, { once: true });
+    return () => removeEventListener('pointerdown', ask);
+  }, []);
+  useEffect(() => {
+    const items = inboxAll.data; if (!items) return;
+    document.title = items.length ? `(${items.length}) Agent HQ` : 'Agent HQ';
+    const key = (i: any) => (i.kind === 'finished' ? (i.deploy ? null : `finished:${i.project.id}:${i.done.length}`) : i.kind === 'decision' ? `decision:${i.task.id}` : null);
+    const keys = items.map(key).filter(Boolean) as string[];
+    if (seen.current === null) { seen.current = new Set(keys); return; } // do not announce what was already there on load
+    for (const it of items) {
+      const k = key(it); if (!k || seen.current.has(k)) continue;
+      seen.current.add(k);
+      const msg = it.kind === 'finished' ? `✓ ${it.project.name}: งานเสร็จแล้ว · deploy ไหม?` : `● ${it.task.title}: รอคุณตัดสินใจ`;
+      setToast(msg);
+      try { if ('Notification' in window && Notification.permission === 'granted') new Notification('Agent HQ', { body: msg }); } catch { /* ignore */ }
+      setRight(true); setTimeout(() => dispatchEvent(new Event('hq:inbox')));
+    }
+  }, [inboxAll.data]);
+
   const agent = page === 'agent' ? org.data?.agents.find((a) => a.id === param) : null;
   const Page = page === 'agent' ? Agent : (PAGES.find((p) => p.id === page) ?? PAGES[0]).C;
 
@@ -253,7 +277,7 @@ function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight
         {ov?.claude?.rateLimitedUntil && <span className="pill text-kin">limit · resumes {new Date(ov.claude.rateLimitedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
         {ov?.paused && <span className="pill text-kin">paused</span>}
         {ov && <span className={`pill ${ov.autoPilot ? 'text-matcha' : 'text-faint'}`} title="Autopilot: the CEO assigns, work starts and routine results are approved automatically">{ov.autoPilot ? '✈ autopilot' : 'manual'}</span>}
-        {ov?.pendingApprovals > 0 && <button className="pill text-accent" onClick={() => { setRight(() => true); setTimeout(() => dispatchEvent(new Event('hq:inbox'))); }}>● {ov.pendingApprovals} need you</button>}
+        {ov?.pendingApprovals > 0 && <button className="pill text-accent" onClick={() => { setRight(() => true); setTimeout(() => dispatchEvent(new Event('hq:inbox'))); }}>● รออนุมัติ {ov.pendingApprovals}</button>}
         {ov?.claude?.costEstimateTodayUsd != null && <span className="pill text-matcha" title="API-equivalent estimate today; not a bill">${ov.claude.costEstimateTodayUsd.toFixed(2)}</span>}
         <button className="w-28 text-left" onClick={check} disabled={checking}
           title={five ? `Claude 5-hour window: ${pct}% · updated ${ago(ov?.claude?.lastRateLimitAt)} · click to refresh` : 'Click to ask Claude for current usage'}>
@@ -276,7 +300,7 @@ function RightBar({ agentId, agents }: { agentId: string | null; agents: any[] }
   useEffect(() => { const f = () => setTab('inbox'); addEventListener('hq:inbox', f); return () => removeEventListener('hq:inbox', f); }, []);
   const inbox = useResource<any[]>('/api/inbox', ['task', 'session.status']);
   const n = inbox.data?.length ?? 0;
-  const tabs = [['inbox', 'Inbox'], ['tasks', 'Tasks'], ['activity', 'Activity'], ['history', 'History']];
+  const tabs = [['inbox', 'อนุมัติ'], ['tasks', 'Tasks'], ['activity', 'Activity'], ['history', 'History']];
   return (
     <aside className="flex min-h-0 flex-col border-l border-line bg-panel">
       <div className="flex h-14 shrink-0 border-b border-line">

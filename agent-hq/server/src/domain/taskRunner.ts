@@ -41,19 +41,23 @@ export const LOCAL_ONLY_RULE = 'Work on the local files only. Never deploy, publ
 export const PUBLISH_DENY = ['Bash(git push:*)', 'Bash(firebase:*)', 'Bash(npx firebase:*)', 'Bash(npm run deploy:*)',
   'Bash(deploy.bat:*)', 'Bash(./deploy.bat:*)', 'Bash(cmd /c deploy.bat:*)', 'Bash(vercel:*)', 'Bash(netlify:*)', 'Bash(gh:*)'];
 
-export function buildSpec(agent: AgentRow, prompt: string, cwd: string, maxTurns: number): RunSpec {
+/**
+ * permissionMode: the owner policy runtime.permissionMode (default 'auto': Claude Code approves safe actions itself,
+ * asks nobody in headless mode). Hard deny rules (PUBLISH_DENY, agent disallowedTools) still always win.
+ */
+export function buildSpec(agent: AgentRow, prompt: string, cwd: string, maxTurns: number, permissionMode?: RunSpec['permissionMode']): RunSpec {
   const perm = JSON.parse(agent.permissions || '{}');
   return {
     prompt, cwd, model: agent.model, maxTurns,
     systemPrompt: `You are ${agent.name}, ${agent.role}, in an AI organization run by a human owner.\n${agent.instructions}\n\n${LOCAL_ONLY_RULE}`,
     tools: perm.tools, allowedTools: perm.allowedTools,
     disallowedTools: [...new Set([...(perm.disallowedTools ?? []), ...PUBLISH_DENY])],
-    permissionMode: perm.permissionMode ?? 'default',
+    permissionMode: permissionMode ?? perm.permissionMode ?? 'default',
   };
 }
 
 /** Autopilot accepts finished work automatically; agents flag what really needs the owner. */
-export const OWNER_HINT = 'Your work is accepted automatically unless you flag it. If you have a proposal or opinion beyond the task, need the owner to decide something, or the result should be checked by the owner before it counts as done, make the LAST line of your reply exactly:\nNEEDS_OWNER: <what the owner should decide or approve>';
+export const OWNER_HINT = 'Your work is accepted automatically unless you flag it. If you have a proposal or opinion beyond the task, need the owner to decide something, or the result should be checked by the owner before it counts as done, make the LAST line of your reply exactly:\nNEEDS_OWNER: <what the owner should decide or approve>\nThe owner reads Thai: write the NEEDS_OWNER line in Thai.';
 export const ownerAsk = (text: string | null) => {
   const m = [...(text ?? '').matchAll(/^\s*NEEDS_OWNER:\s*(.+)$/gim)].map((x) => x[1].trim());
   return m.length ? m.join('\n') : null;
@@ -159,7 +163,7 @@ export class TaskRunner {
     if (!t || t.assignee_id || !['BACKLOG', 'PLANNED'].includes(t.status)) return;
     const d = status === 'completed' ? parseDispatch(s.result_text ?? '') : null;
     const a = d ? this.db.prepare("SELECT * FROM agents WHERE id = ? AND status = 'active' AND level > 1").get(d.assignee) as AgentRow | undefined : undefined;
-    if (!a) { this.comment(t.id, 'ceo', `Could not pick an assignee (${status}). Please choose one.`); return; }
+    if (!a) { this.comment(t.id, 'ceo', `CEO เลือกคนรับงานไม่ได้ (${status}) กรุณาเลือกเอง`); return; }
     this.db.prepare('UPDATE tasks SET assignee_id = ? WHERE id = ?').run(a.id, t.id);
     transition(this.db, t.id, 'ASSIGNED', 'ceo', `assigned to ${a.id}`);
     this.comment(t.id, 'ceo', `Assigned to ${a.role}. ${d!.reason}`);
@@ -224,7 +228,7 @@ export class TaskRunner {
     const canEscalate = assignee.model_mode !== 'fixed' && !!nextDifficulty(t.difficulty) && getPolicy(this.db, 'models.autoEscalate', true);
     const cwd = projectWorkspace(this.db, this.dataDir, t.project_id);
     const maxTurns = getPolicy(this.db, 'runtime.maxTurnsPerSession', 30);
-    const base = buildSpec(assignee, taskPrompt(this.db, taskId, canEscalate), cwd, maxTurns);
+    const base = buildSpec(assignee, taskPrompt(this.db, taskId, canEscalate), cwd, maxTurns, getPolicy(this.db, 'runtime.permissionMode', 'auto'));
     const spec: RunSpec = resume
       ? { ...base, model, resumeSessionId: resume.claudeSessionId, prompt: `${resume.note}\n\nContinue the task from where you stopped and finish it.${canEscalate ? `\n\n${ESCALATE_HINT}` : ''}` }
       : { ...base, model };
@@ -277,7 +281,7 @@ export class TaskRunner {
         transition(this.db, t.id, 'DONE', 'autopilot', 'no owner decision needed');
       } else {
         this.db.prepare("UPDATE tasks SET review_status = 'pending' WHERE id = ?").run(t.id);
-        const why = [ask, denied.length ? `Blocked tools: ${denied.join(' · ')}` : null].filter(Boolean).join('\n');
+        const why = [ask, denied.length ? `คำสั่งที่ถูกบล็อก: ${denied.join(' · ')}` : null].filter(Boolean).join('\n');
         if (why) this.comment(t.id, 'system', `Needs your decision:\n${why}`);
       }
     } else {

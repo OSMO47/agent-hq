@@ -282,3 +282,38 @@ test('delete project: refuses while a session is live; then removes tasks + sess
   assert.equal(Number((db.prepare('SELECT count(*) n FROM sessions WHERE task_id = ?').get(a.id) as any).n), 0);
   assert.equal(Number((db.prepare('SELECT count(*) n FROM task_comments WHERE task_id = ?').get(a.id) as any).n), 0);
 });
+
+test('finished project → Inbox asks to deploy; owner-run deploy, result kept until dismissed; skip clears it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hq-deploy-'));
+  const p = (await api('POST', '/api/projects', { name: 'Shippable', repoPath: dir })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Change text', assigneeId: 'frontend-developer' })).body;
+  let inbox = (await api('GET', '/api/inbox')).body;
+  assert.ok(!inbox.some((i: any) => i.kind === 'finished' && i.project.id === p.id), 'open work: not finished yet');
+
+  await api('POST', `/api/tasks/${t.id}/transition`, { to: 'CANCELLED' }); // close the first one
+  const u = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Real work', assigneeId: 'frontend-developer' })).body;
+  db.prepare("UPDATE tasks SET status = 'DONE', updated_at = datetime('now', '+1 second') WHERE id = ?").run(u.id);
+  inbox = (await api('GET', '/api/inbox')).body;
+  const item = inbox.find((i: any) => i.kind === 'finished' && i.project.id === p.id);
+  assert.ok(item, 'all work done → deploy question');
+  assert.deepEqual(item.done.map((d: any) => d.title), ['Real work']);
+
+  const r = await api('POST', `/api/projects/${p.id}/deploy`, { command: 'node -e "console.log(\'deployed-ok\')"', commit: false });
+  assert.equal(r.status, 200);
+  for (let i = 0; i < 100 && (await api('GET', `/api/projects/${p.id}/deploy`)).body.running; i++) await new Promise((res) => setTimeout(res, 50));
+  const st = (await api('GET', `/api/projects/${p.id}/deploy`)).body;
+  assert.equal(st.ok, true);
+  assert.match(st.output, /deployed-ok/);
+  inbox = (await api('GET', '/api/inbox')).body;
+  assert.ok(inbox.find((i: any) => i.kind === 'finished' && i.project.id === p.id)?.deploy?.ok, 'result stays visible');
+  await api('POST', `/api/projects/${p.id}/deploy/dismiss`);
+  inbox = (await api('GET', '/api/inbox')).body;
+  assert.ok(!inbox.some((i: any) => i.project?.id === p.id), 'dismissed and deployed → gone');
+
+  const v = (await api('POST', '/api/tasks', { projectId: p.id, title: 'More work', assigneeId: 'frontend-developer' })).body;
+  db.prepare("UPDATE tasks SET status = 'DONE', updated_at = datetime('now', '+2 seconds') WHERE id = ?").run(v.id);
+  assert.ok((await api('GET', '/api/inbox')).body.some((i: any) => i.project?.id === p.id), 'new work → asks again');
+  await api('POST', `/api/projects/${p.id}/deploy/skip`);
+  db.prepare("UPDATE projects SET deploy_decided_at = datetime('now', '+5 seconds') WHERE id = ?").run(p.id);
+  assert.ok(!(await api('GET', '/api/inbox')).body.some((i: any) => i.project?.id === p.id), 'skipped → gone');
+});

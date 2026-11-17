@@ -9,10 +9,11 @@ import { TaskRunner, buildSpec, projectWorkspace } from './domain/taskRunner.ts'
 import { readyTasks } from './domain/tasks.ts';
 import { CeoPlanner, gitDirty } from './domain/ceoPlanner.ts';
 import { deleteProject, projectFootprint } from './domain/projects.ts';
+import { Deployer, finishedProjects } from './domain/deploy.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
-  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot']);
+  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot', 'runtime.permissionMode']);
 const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
 
 /** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
@@ -40,6 +41,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   const planner = new CeoPlanner(db, sm, opts.dataDir, (projectId) => { broadcast({ type: 'project', projectId }); pilot(); });
   /** Let the organization move on by itself after any change (no-op when autopilot is off or the org is paused). */
   const pilot = () => setImmediate(() => { runner.autoPilot(); broadcast({ type: 'task' }); });
+  const deployer = new Deployer(db);
   const app = express();
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
   app.use((req, res, next) => {
@@ -221,7 +223,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     if (['queued', 'starting', 'running'].includes(s.status)) throw new TaskError('session is still running');
     const agent = one('SELECT * FROM agents WHERE id = ?', s.agent_id) as any;
     const prev = JSON.parse((one('SELECT spec FROM sessions WHERE id = ?', s.id) as any).spec);
-    const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30)), resumeSessionId: s.claude_session_id };
+    const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30), getPolicy(db, 'runtime.permissionMode', 'auto')), resumeSessionId: s.claude_session_id };
     if (!spec.prompt) throw new TaskError('text required');
     return { sessionId: sm.enqueue({ agentId: agent.id, actor: OWNER, spec, purpose: 'message' }) };
   }));
@@ -243,6 +245,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     if (!EDITABLE_POLICIES.has(key)) throw new TaskError(`policy ${key} is not editable here`);
     const v = req.body?.value;
     if (key === 'models.byDifficulty' && !(v && ['easy', 'medium', 'hard'].every((d) => MODEL_ALIASES.has(v[d])))) throw new TaskError('need a model (opus|sonnet|haiku) for easy, medium and hard');
+    if (key === 'runtime.permissionMode' && !['auto', 'default', 'acceptEdits'].includes(v)) throw new TaskError('permissionMode must be auto, default or acceptEdits');
     if ((key === 'runtime.defaultModel' || key === 'models.assessment') && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
     if (key === 'models.autoEscalate' && typeof v !== 'boolean') throw new TaskError('must be true or false');
     if (/maxConcurrentSessions|maxTurnsPerSession|maxAgents|sessionTimeoutMs/.test(key) && !(Number.isInteger(v) && v > 0)) throw new TaskError('must be a positive integer');
@@ -262,9 +265,26 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
         AND (? = 0 OR ((SELECT COUNT(*) FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch') >= 2
              AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch' AND s.status IN ('queued','starting','running'))))`,
         getPolicy(db, 'org.autoPilot', true) ? 1 : 0) as any[]) items.push({ kind: 'unassigned', task: t });
+    // Finished work: tell the owner and ask whether to deploy (agents never deploy).
+    const finished = finishedProjects(db);
+    // Keep showing a project whose deploy is running or whose result is not dismissed yet.
+    for (const id of deployer.active()) {
+      if (finished.some((f) => f.project.id === id)) continue;
+      const p = one('SELECT * FROM projects WHERE id = ?', id) as any;
+      if (p) finished.push({ project: p, done: [], command: p.deploy_cmd });
+    }
+    for (const f of finished) {
+      items.unshift({ kind: 'finished', task: { id: f.project.id, title: f.project.name, updated_at: f.done.at(-1)?.updated_at }, project: f.project,
+        done: f.done, command: f.command, git: f.project.repo_path ? gitDirty(f.project.repo_path) : null, deploy: deployer.state(f.project.id) });
+    }
     return items;
   }
   app.get('/api/inbox', h(() => inbox()));
+  /** Owner-only publish: runs the project's deploy command (optionally committing first). */
+  app.post('/api/projects/:id/deploy', h((req) => deployer.start(req.params.id as string, { command: String(req.body?.command ?? ''), commit: !!req.body?.commit, actor: OWNER })));
+  app.get('/api/projects/:id/deploy', h((req) => deployer.state(req.params.id as string)));
+  app.post('/api/projects/:id/deploy/dismiss', h((req) => { deployer.dismiss(req.params.id as string); return { ok: true }; }));
+  app.post('/api/projects/:id/deploy/skip', h((req) => { deployer.skip(req.params.id as string, OWNER); return { ok: true }; }));
 
   app.get('/api/audit', h(() => all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 500')));
 
@@ -289,6 +309,8 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   sm.on('event', (sessionId: string, event: unknown) => broadcast({ type: 'session.event', sessionId, event }));
   sm.on('status', (sessionId: string, status: string) => broadcast({ type: 'session.status', sessionId, status }));
   sm.on('rateLimit', () => broadcast({ type: 'usage' }));
+  let deployTick: NodeJS.Timeout | null = null; // output can be chatty: coalesce pushes
+  deployer.on('change', (projectId: string) => { if (!deployTick) deployTick = setTimeout(() => { deployTick = null; broadcast({ type: 'deploy', projectId }); }, 400); });
   sm.on('limited', (until: number) => broadcast({ type: 'limited', until }));
 
   pilot(); // pick up anything left waiting from before a restart

@@ -87,6 +87,15 @@ export default function Settings() {
 
       {tab === 'policies' ? (
         <>
+          <Group title="Autopilot · ให้ทีมจัดการเอง" desc="ทีมแบ่งงาน เริ่มงาน และอนุมัติงานปกติเอง คุณจะถูกถามเฉพาะเรื่องที่ต้องตัดสินใจ (Inbox)">
+            <Row label="Autopilot" hint="CEO เลือกคนทำ · งานที่พร้อมเริ่มเอง · งานที่ไม่มีคำถามอนุมัติเป็น DONE เอง">
+              <Switch on={!!val('org.autoPilot', true)} onChange={(v) => save('org.autoPilot', v, `autopilot ${v ? 'on' : 'off'}`)} />
+            </Row>
+            <Row label="Permission mode ของ agent" hint="auto = Claude Code อนุมัติคำสั่งที่ปลอดภัยเอง · default = ทำได้เฉพาะคำสั่งในรายการที่อนุญาต · ทั้งสองแบบ deploy / git push / rm ยังถูกบล็อกเสมอ">
+              <Segmented value={val('runtime.permissionMode', 'auto')} options={['auto', 'default']} onChange={(m) => save('runtime.permissionMode', m, `permission mode → ${m}`)} />
+            </Row>
+          </Group>
+
           <Group title="Model by task difficulty" desc="Each task's difficulty decides which Claude model runs it. Tasks without a difficulty use the agent's own model.">
             {DIFF.map((d) => (
               <Row key={d.key} label={<><span className="capitalize">{d.key}</span><span className="ml-2 text-faint">{d.th}</span></>}

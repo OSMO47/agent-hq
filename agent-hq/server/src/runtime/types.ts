@@ -23,7 +23,7 @@ export interface RunSpec {
   tools?: string[];
   allowedTools?: string[];
   disallowedTools?: string[];
-  permissionMode?: 'default' | 'plan' | 'acceptEdits';
+  permissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto';
   addDirs?: string[];
   maxTurns?: number;
 }
