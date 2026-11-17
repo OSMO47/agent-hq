@@ -204,3 +204,58 @@ test('auto-escalation can be turned off by the owner', async () => {
   assert.equal((await api('GET', `/api/tasks/${t.id}`)).body.task.status, 'REVIEW');
   await api('PUT', '/api/policies/models.autoEscalate', { value: true });
 });
+
+test('CEO brief → read-only planning session → tasks with assignees and dependencies', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'Plan me' })).body;
+  assert.equal((await api('POST', `/api/projects/${p.id}/brief`, { text: '' })).status, 400);
+  const sid = (await api('POST', `/api/projects/${p.id}/brief`, { text: 'Add a contact form' })).body.sessionId;
+  assert.equal((await api('POST', `/api/projects/${p.id}/brief`, { text: 'again' })).status, 400, 'one plan at a time');
+  const run = ad.runs.at(-1)!;
+  assert.equal(run.spec.model, 'opus');
+  assert.deepEqual(run.spec.tools, ['Read', 'Glob', 'Grep'], 'CEO only reads while planning');
+  assert.match(run.spec.prompt, /ui-ux-designer/);
+  let st = (await api('GET', `/api/projects/${p.id}/status`)).body;
+  assert.equal(st.planning.id, sid);
+
+  const plan = { summary: 'Form + API + QA.', tasks: [
+    { title: 'Design form', description: 'd', assignee: 'ui-ux-designer' },
+    { title: 'API endpoint', description: 'd', assignee: 'backend-developer', priority: 1 },
+    { title: 'Wire form', description: 'd', assignee: 'frontend-developer', dependsOn: [0, 1] },
+    { title: 'QA', description: 'd', assignee: 'qa-engineer', dependsOn: [2, 9] },
+    { title: 'Mystery', description: 'd', assignee: 'nobody' },
+  ] };
+  done(run, 'Looked at the code.\n```json\n' + JSON.stringify(plan) + '\n```', { cid: 'plan-1' });
+  await settle();
+
+  const { tasks, dependencies } = (await api('GET', `/api/tasks?projectId=${p.id}`)).body;
+  assert.equal(tasks.length, 5);
+  const byTitle = Object.fromEntries(tasks.map((t: any) => [t.title, t]));
+  assert.equal(byTitle['Design form'].status, 'ASSIGNED');
+  assert.equal(byTitle['API endpoint'].priority, 1);
+  assert.equal(byTitle['Mystery'].status, 'BACKLOG', 'unknown assignee → unassigned');
+  assert.equal(byTitle['Wire form'].difficulty, null, 'leaders rate difficulty, not the CEO');
+  const depsOf = (t: string) => dependencies.filter((d: any) => d.task_id === byTitle[t].id).map((d: any) => d.depends_on).sort();
+  assert.deepEqual(depsOf('Wire form'), [byTitle['Design form'].id, byTitle['API endpoint'].id].sort());
+  assert.deepEqual(depsOf('QA'), [byTitle['Wire form'].id], 'invalid dependency index ignored');
+  st = (await api('GET', `/api/projects/${p.id}/status`)).body;
+  assert.equal(st.planning, null);
+  assert.match(st.messages[0].body, /Created 5 task/);
+  assert.equal(st.ready, 2, 'design + API are ready, the rest wait');
+
+  // run-ready starts exactly the unblocked ones (design → work directly, API → leader assessment)
+  const before = ad.runs.length;
+  const rr = (await api('POST', `/api/projects/${p.id}/run-ready`)).body;
+  assert.equal(rr.started, 2);
+  assert.equal(ad.runs.length - before >= 1, true);
+  for (const r of ad.runs.slice(before)) { r.exit(1); }
+  await settle();
+});
+
+test('unreadable plan creates nothing and reports back', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'Bad plan' })).body;
+  await api('POST', `/api/projects/${p.id}/brief`, { text: 'Do things' });
+  done(ad.runs.at(-1)!, 'I am not sure what to do.');
+  await settle();
+  assert.equal((await api('GET', `/api/tasks?projectId=${p.id}`)).body.tasks.length, 0);
+  assert.match((await api('GET', `/api/projects/${p.id}/status`)).body.messages[0].body, /could not produce a readable plan/);
+});

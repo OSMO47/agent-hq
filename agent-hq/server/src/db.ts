@@ -32,12 +32,16 @@ function migrate(db: DB) {
   if (hasTable('sessions') && !cols('sessions').includes('purpose')) {
     db.exec("ALTER TABLE sessions ADD COLUMN purpose TEXT NOT NULL DEFAULT 'work'");
   }
+  if (hasTable('sessions') && !cols('sessions').includes('project_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)');
+  }
 }
 
 export const newId = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;
 
 /** Run fn inside a transaction (node:sqlite has no helper). */
 export function tx<T>(db: DB, fn: () => T): T {
+  if (db.isTransaction) return fn(); // re-entrant: join the outer transaction
   db.exec('BEGIN IMMEDIATE');
   try {
     const r = fn();

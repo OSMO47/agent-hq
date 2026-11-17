@@ -10,7 +10,7 @@ export interface SessionRow {
   cost_usd_estimate: number | null; input_tokens: number | null; output_tokens: number | null; num_turns: number | null;
 }
 
-export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec; actor: string; purpose?: 'work' | 'assess' | 'message' }
+export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec; actor: string; purpose?: 'work' | 'assess' | 'plan' | 'message'; projectId?: string }
 
 /**
  * Owns every live Claude process. Enforces the concurrency limit, timeouts, stop / stop-all,
@@ -40,8 +40,8 @@ export class SessionManager extends EventEmitter {
 
   enqueue(input: EnqueueInput): string {
     const id = newId('ses');
-    this.db.prepare("INSERT INTO sessions (id, agent_id, task_id, purpose, status, model, prompt, spec) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)")
-      .run(id, input.agentId, input.taskId ?? null, input.purpose ?? 'work', input.spec.model, input.spec.prompt, JSON.stringify(input.spec));
+    this.db.prepare("INSERT INTO sessions (id, agent_id, task_id, project_id, purpose, status, model, prompt, spec) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)")
+      .run(id, input.agentId, input.taskId ?? null, input.projectId ?? (input.taskId ? (this.db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(input.taskId) as any)?.project_id ?? null : null), input.purpose ?? 'work', input.spec.model, input.spec.prompt, JSON.stringify(input.spec));
     audit(this.db, input.actor, 'session.enqueue', id, { agentId: input.agentId, taskId: input.taskId });
     this.emit('status', id, 'queued');
     this.pump();

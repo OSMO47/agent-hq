@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   id                TEXT PRIMARY KEY,
   agent_id          TEXT NOT NULL REFERENCES agents(id),
   task_id           TEXT REFERENCES tasks(id),
-  purpose           TEXT NOT NULL DEFAULT 'work', -- work | assess | message
+  purpose           TEXT NOT NULL DEFAULT 'work', -- work | assess | plan | message
+  project_id        TEXT REFERENCES projects(id),
   claude_session_id TEXT,
   status            TEXT NOT NULL CHECK (status IN
                     ('queued','starting','running','completed','failed','stopped','timeout','interrupted')),

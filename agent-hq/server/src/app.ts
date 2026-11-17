@@ -5,7 +5,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { type DB, newId, audit, getPolicy, setPolicy } from './db.ts';
 import { createTask, transition, getTask, addDependency, TaskError, type TaskStatus } from './domain/tasks.ts';
 import type { SessionManager } from './runtime/sessionManager.ts';
-import { TaskRunner, buildSpec } from './domain/taskRunner.ts';
+import { TaskRunner, buildSpec, projectWorkspace } from './domain/taskRunner.ts';
+import { readyTasks } from './domain/tasks.ts';
+import { CeoPlanner, gitDirty } from './domain/ceoPlanner.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
@@ -34,6 +36,7 @@ const h = (fn: Handler) => async (req: Request, res: Response, next: NextFunctio
 /** Builds the HTTP + WS server. Local-only: rejects foreign Host/Origin headers (DNS-rebinding guard). */
 export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; port: number; staticDir?: string }) {
   const runner = new TaskRunner(db, sm, opts.dataDir);
+  const planner = new CeoPlanner(db, sm, opts.dataDir, (projectId) => broadcast({ type: 'project', projectId }));
   const app = express();
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
   app.use((req, res, next) => {
@@ -103,6 +106,30 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     audit(db, OWNER, 'project.create', id, { name });
     return one('SELECT * FROM projects WHERE id = ?', id);
   }));
+  /** Everything the board needs about a project besides its tasks: workspace, git safety, CEO activity. */
+  app.get('/api/projects/:id/status', h((req) => {
+    const id = req.params.id as string;
+    const workspace = projectWorkspace(db, opts.dataDir, id);
+    return {
+      workspace,
+      git: gitDirty(workspace),
+      planning: one(`SELECT id, status FROM sessions WHERE project_id = ? AND purpose = 'plan' AND status IN ('queued','starting','running') ORDER BY queued_at DESC LIMIT 1`, id) ?? null,
+      messages: all("SELECT * FROM messages WHERE project_id = ? ORDER BY id DESC LIMIT 20", id),
+      ready: readyTasks(db, id).length,
+      paused: getPolicy(db, 'org.paused', false),
+    };
+  }));
+  app.post('/api/projects/:id/brief', h((req) => ({ sessionId: planner.brief(req.params.id as string, String(req.body?.text ?? ''), OWNER) })));
+  /** Start every ASSIGNED task whose dependencies are done (concurrency limit still applies via the queue). */
+  app.post('/api/projects/:id/run-ready', h((req) => {
+    const started: string[] = []; const errors: string[] = [];
+    for (const t of readyTasks(db, req.params.id as string)) {
+      try { runner.run(t.id, OWNER); started.push(t.id); } catch (e) { errors.push(`${t.title}: ${(e as Error).message}`); }
+    }
+    broadcast({ type: 'task' });
+    return { started: started.length, errors };
+  }));
+
   app.get('/api/tasks', h((req) => {
     const pid = req.query.projectId as string | undefined;
     return {
