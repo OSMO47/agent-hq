@@ -1,10 +1,9 @@
-# Agent HQ
+# Agent HQ (app folder)
 
-Local-first manager for a Claude-only AI organization. See `../docs/PHASE1-AUDIT.md` for design and progress.
-
-Requirements: Node.js ≥ 24 (uses built-in `node:sqlite` and TypeScript type stripping — no build step), Claude Code CLI logged in (`claude`).
+How to install and run: see the main [README](../README.md).
 
 ```powershell
-npm test            # unit tests, no Claude usage
-npm run test:live   # one real haiku call (uses quota)
+npm install && npm run build && npm start   # http://127.0.0.1:4317
+npm test                                    # unit + API tests, no Claude usage
+npm run test:live                           # one real haiku call (uses quota)
 ```
