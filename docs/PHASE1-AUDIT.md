@@ -112,3 +112,16 @@ Known issues / next:
 - Denied tools only surface after the run (`permission_denials`); live approval relay is Phase 9.
 - No HTTP/WS server or UI yet → next: Express + WS API, then MVP dashboard (Overview, Org, Tasks/Kanban, Live Sessions, stop-all).
 - Worktree creation per task not yet implemented (Phase 4).
+
+### 2026-11-17 — MVP slice: API + dashboard
+Done:
+- Owner policy: **all agents on opus**; on usage limit the queue pauses until the reset time and the interrupted session resumes the same Claude conversation (`--resume`). Model is never downgraded.
+- `app.ts` — REST + WebSocket on 127.0.0.1 only; Host/Origin guard; overview (real CPU % sampler, RAM, Claude 5h/7d utilization from `rate_limit_event`), org, projects, tasks (create/assign/deps/transition/comments/run), sessions (live events, stop, follow-up via resume), owner stop-all / pause, whitelisted policy edits, audit log.
+- `taskRunner.ts` — run = claim lock + enqueue; completed → REVIEW (agent report saved as comment), failed → FAILED, stopped → ASSIGNED; orphan recovery after restart.
+- Dashboard (React 19 + Vite 8 + Tailwind 4): Overview, Organization (hierarchy + agent drawer: model, tools, suspend), Tasks (Kanban, create, deps, review/approve/request changes), Live Sessions (streaming output, stop, follow-up), Settings (policies, audit log). Stop-all + pause always in top bar. Pages not yet functional are hidden, not stubbed.
+- `start.ps1` launcher.
+
+Verified: `npm test` 20/20 · `vite build` OK · server boots, `/api/overview` returns real data, foreign Host → 403.
+Not verified: visual check in a browser (the connected Chrome could not reach this machine's localhost).
+
+Next: CEO orchestration (owner request → CEO plan → tasks for leaders/specialists), git worktree per task, then Recruitment Center.

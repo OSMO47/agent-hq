@@ -11,6 +11,19 @@ const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
   'runtime.defaultModel', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents']);
 
+/** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
+let lastCpu = os.cpus().map((c) => c.times);
+let cpuPercent: number | null = null;
+setInterval(() => {
+  const now = os.cpus().map((c) => c.times);
+  let idle = 0, total = 0;
+  now.forEach((t, i) => { const p = lastCpu[i]; if (!p) return;
+    const d = (k: keyof typeof t) => t[k] - p[k];
+    idle += d('idle'); total += d('user') + d('nice') + d('sys') + d('irq') + d('idle'); });
+  cpuPercent = total > 0 ? Math.round((1 - idle / total) * 1000) / 10 : null;
+  lastCpu = now;
+}, 2000).unref();
+
 type Handler = (req: Request, res: Response) => unknown;
 const h = (fn: Handler) => async (req: Request, res: Response, next: NextFunction) => {
   try { const out = await fn(req, res); if (!res.headersSent) res.json(out ?? { ok: true }); }
@@ -47,7 +60,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
       tasks, sessions,
       pendingApprovals: (one("SELECT COUNT(*) n FROM approvals WHERE status='pending'") as any).n,
       pendingRecruitment: (one("SELECT COUNT(*) n FROM recruitment_requests WHERE status IN ('pending_ceo','pending_owner')") as any).n,
-      system: { cpuCount: cpus.length, loadAvg: os.loadavg(), cpuModel: cpus[0]?.model, totalMem: os.totalmem(), freeMem: os.freemem(), uptime: os.uptime() },
+      system: { cpuCount: cpus.length, cpuPercent, gpu: null, cpuModel: cpus[0]?.model, totalMem: os.totalmem(), freeMem: os.freemem(), uptime: os.uptime() },
       claude: { lastRateLimit: sm.lastRateLimit, rateLimitedUntil: sm.rateLimitedUntil || null,
         costEstimateTodayUsd: (one("SELECT SUM(cost_usd_estimate) c FROM sessions WHERE queued_at > datetime('now','start of day')") as any).c },
       paused: getPolicy(db, 'org.paused', false),
@@ -96,7 +109,9 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   app.get('/api/tasks/:id', h((req) => {
     const t = getTask(db, req.params.id as string);
     if (!t) throw new TaskError('task not found');
-    return { task: t, history: all('SELECT * FROM task_history WHERE task_id = ? ORDER BY id', t.id),
+    return { task: t,
+      dependsOn: all('SELECT t.id, t.title, t.status FROM task_dependencies d JOIN tasks t ON t.id = d.depends_on WHERE d.task_id = ?', t.id),
+      history: all('SELECT * FROM task_history WHERE task_id = ? ORDER BY id', t.id),
       comments: all('SELECT * FROM task_comments WHERE task_id = ? ORDER BY id', t.id),
       sessions: all('SELECT id, status, agent_id, queued_at, ended_at, error FROM sessions WHERE task_id = ? ORDER BY queued_at DESC', t.id) };
   }));

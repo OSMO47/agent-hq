@@ -9,10 +9,22 @@
   },
   "scripts": {
     "test": "node --test --test-reporter=spec \"server/test/*.test.ts\"",
-    "test:live": "node server/test/live-claude.ts"
+    "test:live": "node server/test/live-claude.ts",
+    "dev:server": "node --watch server/src/main.ts",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "node server/src/main.ts"
   },
   "dependencies": {
     "express": "^5.1.0",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@vitejs/plugin-react": "^6.3.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwindcss": "^4.3.5",
+    "vite": "^8.3.8"
   }
 }
