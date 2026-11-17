@@ -12,8 +12,18 @@ const here = dirname(fileURLToPath(import.meta.url));
 export function openDb(file: string): DB {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
+  migrate(db);
   db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'));
   return db;
+}
+
+/** Additive migrations for databases created by older versions (schema.sql only creates missing tables). */
+function migrate(db: DB) {
+  const hasTable = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
+  const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+  if (hasTable('tasks') && !cols('tasks').includes('difficulty')) {
+    db.exec("ALTER TABLE tasks ADD COLUMN difficulty TEXT CHECK (difficulty IN ('easy','medium','hard'))");
+  }
 }
 
 export const newId = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;

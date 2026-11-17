@@ -14,6 +14,7 @@ export const PERMISSIONS = {
 
 export const DEFAULT_POLICIES: Record<string, unknown> = {
   'runtime.defaultModel': 'opus',
+  'models.byDifficulty': { easy: 'haiku', medium: 'sonnet', hard: 'opus' },
   'runtime.maxConcurrentSessions': 2,
   'runtime.sessionTimeoutMs': 20 * 60_000,
   'runtime.maxTurnsPerSession': 30,
@@ -53,6 +54,9 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(
 
 /** Seed policies + the initial organization. Idempotent: does nothing if a CEO already exists. */
 export function seed(db: DB): boolean {
+  for (const [k, v] of Object.entries(DEFAULT_POLICIES)) {
+    if (!db.prepare('SELECT 1 FROM policies WHERE key = ?').get(k) && db.prepare("SELECT 1 FROM agents WHERE id = 'ceo'").get()) setPolicy(db, k, v, 'system');
+  }
   if (db.prepare("SELECT 1 FROM agents WHERE id = 'ceo'").get()) return false;
   tx(db, () => {
     for (const [k, v] of Object.entries(DEFAULT_POLICIES)) setPolicy(db, k, v, 'system');

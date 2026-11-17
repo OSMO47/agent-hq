@@ -9,7 +9,8 @@ import { TaskRunner, buildSpec } from './domain/taskRunner.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
-  'runtime.defaultModel', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents']);
+  'runtime.defaultModel', 'models.byDifficulty', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents']);
+const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
 
 /** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
 let lastCpu = os.cpus().map((c) => c.times);
@@ -124,12 +125,16 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   }));
   app.patch('/api/tasks/:id', h((req) => {
     const id = req.params.id as string;
-    const { assigneeId, priority, title, description, dependsOn } = req.body ?? {};
+    const { assigneeId, priority, title, description, dependsOn, difficulty } = req.body ?? {};
     const t = getTask(db, id);
     if (!t) throw new TaskError('task not found');
     if (t.status === 'RUNNING' && assigneeId !== undefined) throw new TaskError('cannot reassign a running task');
     db.prepare('UPDATE tasks SET assignee_id = COALESCE(?, assignee_id), priority = COALESCE(?, priority), title = COALESCE(?, title), description = COALESCE(?, description), updated_at = datetime(\'now\') WHERE id = ?')
       .run(assigneeId ?? null, priority ?? null, title ?? null, description ?? null, id);
+    if (difficulty !== undefined) {
+      if (t.status === 'RUNNING') throw new TaskError('cannot change difficulty while running');
+      db.prepare('UPDATE tasks SET difficulty = ? WHERE id = ?').run(difficulty || null, id);
+    }
     for (const d of dependsOn ?? []) addDependency(db, id, d);
     if (assigneeId && ['BACKLOG', 'PLANNED'].includes(t.status)) transition(db, id, 'ASSIGNED', OWNER, `assigned to ${assigneeId}`);
     audit(db, OWNER, 'task.update', id, req.body);
@@ -190,6 +195,10 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   app.put('/api/policies/:key', h((req) => {
     const key = req.params.key as string;
     if (!EDITABLE_POLICIES.has(key)) throw new TaskError(`policy ${key} is not editable here`);
+    const v = req.body?.value;
+    if (key === 'models.byDifficulty' && !(v && ['easy', 'medium', 'hard'].every((d) => MODEL_ALIASES.has(v[d])))) throw new TaskError('need a model (opus|sonnet|haiku) for easy, medium and hard');
+    if (key === 'runtime.defaultModel' && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
+    if (/maxConcurrentSessions|maxTurnsPerSession|maxAgents|sessionTimeoutMs/.test(key) && !(Number.isInteger(v) && v > 0)) throw new TaskError('must be a positive integer');
     setPolicy(db, key, req.body?.value, OWNER);
     sm.pump();
     return { key, value: req.body?.value };

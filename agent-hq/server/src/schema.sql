@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status        TEXT NOT NULL DEFAULT 'BACKLOG' CHECK (status IN
                 ('BACKLOG','PLANNED','ASSIGNED','RUNNING','REVIEW','DONE','BLOCKED','FAILED','CANCELLED')),
   priority      INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 4), -- 0 = highest
+  difficulty    TEXT CHECK (difficulty IN ('easy','medium','hard')), -- picks the model; NULL = agent's model
   deadline      TEXT,
   assignee_id   TEXT REFERENCES agents(id),
   department_id TEXT REFERENCES departments(id),

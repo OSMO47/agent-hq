@@ -69,3 +69,16 @@ test('claimTask prevents duplicate execution', () => {
   transition(db, t.id, 'ASSIGNED', 'owner');
   assert.equal(claimTask(db, t.id, 's3', 'sys').attempts, 2);
 });
+
+test('migration adds difficulty to a pre-existing tasks table', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const file = join(mkdtempSync(join(tmpdir(), 'hqm-')), 'old.db');
+  const old = new DatabaseSync(file);
+  old.exec("CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, status TEXT, created_at TEXT)");
+  old.close();
+  const db = openDb(file);
+  assert.ok((db.prepare('PRAGMA table_info(tasks)').all() as any[]).some((c) => c.name === 'difficulty'));
+});

@@ -82,7 +82,8 @@ export default function Organization() {
                 {current.session_id && <Kv k="Session"><a className="font-mono text-[11.5px] text-ai hover:underline" href={`#/sessions/${current.session_id}`}>{current.session_id}</a></Kv>}
               </div>
               <div>
-                <div className="label mb-2">Model</div>
+                <div className="label mb-1">Default model</div>
+                <div className="mb-2 text-[11.5px] text-faint">Used only when a task has no difficulty. Difficulty → model is set in Settings.</div>
                 <div className="flex gap-1.5">
                   {MODELS.map((m) => (
                     <button key={m} className={`btn ${current.model === m ? 'btn-primary' : ''}`} onClick={() => patch({ model: m })}>{m}</button>

@@ -85,3 +85,21 @@ test('suspending an agent stops its sessions', async () => {
   assert.equal((await api('GET', `/api/tasks/${t.id}`)).body.task.status, 'ASSIGNED', 'stopped task returns to ASSIGNED');
   assert.equal((await api('POST', `/api/tasks/${t.id}/run`)).status, 400, 'suspended agent cannot run');
 });
+
+test('task difficulty picks the model via owner policy', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'D' })).body;
+  const mk = async (difficulty?: string) => {
+    const t = (await api('POST', '/api/tasks', { projectId: p.id, title: `t-${difficulty}`, assigneeId: 'technical-writer', difficulty })).body;
+    await api('POST', `/api/tasks/${t.id}/run`);
+    const r = ad.runs.at(-1)!; const model = r.spec.model; r.exit(1); await tick();
+    return model;
+  };
+  assert.equal(await mk('easy'), 'haiku');
+  assert.equal(await mk('medium'), 'sonnet');
+  assert.equal(await mk('hard'), 'opus');
+  assert.equal(await mk(undefined), 'opus', 'no difficulty -> agent model');
+  assert.equal((await api('PUT', '/api/policies/models.byDifficulty', { value: { easy: 'gpt-4', medium: 'sonnet', hard: 'opus' } })).status, 400);
+  assert.equal((await api('PUT', '/api/policies/models.byDifficulty', { value: { easy: 'sonnet', medium: 'opus', hard: 'opus' } })).status, 200);
+  assert.equal(await mk('easy'), 'sonnet');
+  assert.equal((await api('PUT', '/api/policies/runtime.maxConcurrentSessions', { value: -1 })).status, 400);
+});

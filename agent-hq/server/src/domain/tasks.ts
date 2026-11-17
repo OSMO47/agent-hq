@@ -3,9 +3,12 @@ import { type DB, tx, newId, audit } from '../db.ts';
 export type TaskStatus =
   | 'BACKLOG' | 'PLANNED' | 'ASSIGNED' | 'RUNNING' | 'REVIEW' | 'DONE' | 'BLOCKED' | 'FAILED' | 'CANCELLED';
 
+export type Difficulty = 'easy' | 'medium' | 'hard';
+export const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
+
 export interface Task {
   id: string; project_id: string; parent_id: string | null; title: string; description: string;
-  status: TaskStatus; priority: number; deadline: string | null; assignee_id: string | null;
+  status: TaskStatus; priority: number; difficulty: Difficulty | null; deadline: string | null; assignee_id: string | null;
   department_id: string | null; review_status: string | null; attempts: number; lock_session: string | null;
 }
 
@@ -25,15 +28,15 @@ const TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 export class TaskError extends Error {}
 
 export function createTask(db: DB, input: {
-  projectId: string; title: string; description?: string; parentId?: string; priority?: number;
+  projectId: string; title: string; description?: string; parentId?: string; priority?: number; difficulty?: Difficulty;
   assigneeId?: string; departmentId?: string; deadline?: string; dependsOn?: string[]; actor?: string;
 }): Task {
   const id = newId('task');
   const actor = input.actor ?? 'owner';
   tx(db, () => {
-    db.prepare(`INSERT INTO tasks (id, project_id, parent_id, title, description, priority, assignee_id, department_id, deadline, status, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, input.projectId, input.parentId ?? null, input.title, input.description ?? '', input.priority ?? 2,
+    db.prepare(`INSERT INTO tasks (id, project_id, parent_id, title, description, priority, difficulty, assignee_id, department_id, deadline, status, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.projectId, input.parentId ?? null, input.title, input.description ?? '', input.priority ?? 2, input.difficulty ?? null,
         input.assigneeId ?? null, input.departmentId ?? null, input.deadline ?? null,
         input.assigneeId ? 'ASSIGNED' : 'BACKLOG', actor);
     for (const dep of input.dependsOn ?? []) addDependency(db, id, dep);

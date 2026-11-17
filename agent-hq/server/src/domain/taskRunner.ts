@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { type DB, newId, audit } from '../db.ts';
-import { claimTask, transition, getTask, TaskError } from './tasks.ts';
+import { type DB, newId, audit, getPolicy } from '../db.ts';
+import { claimTask, transition, getTask, TaskError, type Task } from './tasks.ts';
 import type { SessionManager, SessionStatus } from '../runtime/sessionManager.ts';
 import type { RunSpec } from '../runtime/types.ts';
 
@@ -14,6 +14,15 @@ export function projectWorkspace(db: DB, dataDir: string, projectId: string): st
   const dir = p.repo_path ? resolve(p.repo_path) : join(dataDir, 'workspaces', projectId);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+export const DEFAULT_DIFFICULTY_MODELS = { easy: 'haiku', medium: 'sonnet', hard: 'opus' };
+
+/** Task difficulty picks the model (owner policy); no difficulty → the agent's own model. */
+export function modelFor(db: DB, task: Pick<Task, 'difficulty'>, agentModel: string): string {
+  if (!task.difficulty) return agentModel;
+  const map = getPolicy<Record<string, string>>(db, 'models.byDifficulty', DEFAULT_DIFFICULTY_MODELS);
+  return map[task.difficulty] ?? agentModel;
 }
 
 export function buildSpec(agent: AgentRow, prompt: string, cwd: string, maxTurns: number): RunSpec {
@@ -59,8 +68,9 @@ export class TaskRunner {
     claimTask(this.db, taskId, sessionLock, actor); // throws on unmet deps / duplicate run
     try {
       const cwd = projectWorkspace(this.db, this.dataDir, t.project_id);
-      const maxTurns = 30;
-      const sid = this.sm.enqueue({ agentId: agent.id, taskId, actor, spec: buildSpec(agent, taskPrompt(this.db, taskId), cwd, maxTurns) });
+      const maxTurns = getPolicy(this.db, 'runtime.maxTurnsPerSession', 30);
+      const spec = { ...buildSpec(agent, taskPrompt(this.db, taskId), cwd, maxTurns), model: modelFor(this.db, t, agent.model) };
+      const sid = this.sm.enqueue({ agentId: agent.id, taskId, actor, spec });
       this.db.prepare('UPDATE tasks SET lock_session = ? WHERE id = ?').run(sid, taskId);
       return sid;
     } catch (e) {
