@@ -41,7 +41,9 @@ Stop with **Ctrl+C**. That also stops every running agent session.
 1. **Task board → New project**: give it a name and the **folder of the project** you want the team to work on (for example your website repo). Agents can only work inside this folder. Commit your own changes first so agent edits are easy to review.
 2. **✦ Brief CEO** (bottom left): describe what you want in plain words. The CEO reads the project (read-only) and creates tasks with owners and dependencies. Or use **＋ New Task** for a single job and leave *Assignee* on **Auto**.
 3. Watch it work: **Overview → Team terminals**, or click an agent on the left to see its conversation.
-4. Answer what shows up in the **Inbox** (right bar, first tab). When all tasks of a project are done you get a notification and the choice to **🚀 Deploy** (runs the project's deploy command, for example `deploy.bat` or `npm run deploy`, optionally committing first) or skip.
+4. Answer what shows up in the **Inbox** (right bar, first tab). When all tasks of a project are done you get a notification and can run **commit → push → deploy** in one click (each step optional, stops at the first failure), or skip. **⇡ Publish** on the Task board opens the same card anytime.
+
+**Where does push go?** It is read from the project folder's own git config: the current branch and its upstream (`git branch -vv`), otherwise the remote named `origin` (pushed with `-u` the first time). The card shows the remote, URL and branch before you press. No remote → push is disabled. Deploy runs the project's own command, for example `deploy.bat` or `npm run deploy`.
 
 The organization starts **unpaused with Autopilot on**. Change this anytime: ☰ menu → Pause / Autopilot, or **Settings**.
 
@@ -100,6 +102,6 @@ docs/PHASE1-AUDIT.md    design notes and progress log
    เบราว์เซอร์จะเปิด http://127.0.0.1:4317 ให้เอง ถ้าจะปิด กด **Ctrl+C**
 3. ไปที่ Task board แล้วกด **New project** ใส่โฟลเดอร์ของโปรเจกต์ที่จะให้ทีมทำ
 4. กด **✦ Brief CEO** แล้วพิมพ์สิ่งที่อยากได้ ทีมจะแบ่งงานและเริ่มทำเอง (Autopilot)
-5. คอยดูแท็บ **อนุมัติ** ทางขวา ระบบจะถามคุณเฉพาะเรื่องที่ต้องตัดสินใจ และถามว่าจะ **Deploy** ไหมเมื่องานเสร็จ
+5. คอยดูแท็บ **อนุมัติ** ทางขวา ระบบจะถามคุณเฉพาะเรื่องที่ต้องตัดสินใจ และเมื่องานเสร็จจะถามว่าจะ **commit → push → deploy** ไหม (push ไปที่ branch/remote ตามที่ตั้งไว้ใน git ของโปรเจกต์ และแสดงให้เห็นก่อนกด)
 
 agent ทำงานกับไฟล์ในเครื่องเท่านั้น จะ deploy หรือ push ไม่ได้ การ deploy เกิดขึ้นเฉพาะตอนที่คุณกดปุ่ม 🚀 Deploy
