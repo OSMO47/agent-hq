@@ -1,0 +1,125 @@
+import { EventEmitter } from 'node:events';
+import { type DB, newId, audit, getPolicy } from '../db.ts';
+import type { RuntimeAdapter, RunHandle, RuntimeEvent, RunSpec } from './types.ts';
+
+export type SessionStatus = 'queued' | 'starting' | 'running' | 'completed' | 'failed' | 'stopped' | 'timeout' | 'interrupted';
+
+export interface SessionRow {
+  id: string; agent_id: string; task_id: string | null; claude_session_id: string | null; status: SessionStatus;
+  model: string | null; pid: number | null; prompt: string; result_text: string | null; error: string | null;
+  cost_usd_estimate: number | null; input_tokens: number | null; output_tokens: number | null; num_turns: number | null;
+}
+
+export interface EnqueueInput { agentId: string; taskId?: string; spec: RunSpec; actor: string }
+
+/**
+ * Owns every live Claude process. Enforces the concurrency limit, timeouts, stop / stop-all,
+ * and persists every normalized event so sessions survive a dashboard reload.
+ * Emits: 'event' (sessionId, RuntimeEvent), 'status' (sessionId, status), 'rateLimit' (info).
+ */
+export class SessionManager extends EventEmitter {
+  private readonly live = new Map<string, { handle: RunHandle; timer: NodeJS.Timeout; stopReason?: SessionStatus }>();
+  lastRateLimit: unknown = null;
+
+  private readonly db: DB;
+  private readonly adapter: RuntimeAdapter;
+
+  constructor(db: DB, adapter: RuntimeAdapter) {
+    super();
+    this.db = db;
+    this.adapter = adapter;
+    // Crash recovery: processes from a previous server run are gone; queued sessions stay queued.
+    const r = db.prepare("UPDATE sessions SET status = 'interrupted', ended_at = datetime('now') WHERE status IN ('starting','running')").run();
+    if (r.changes) audit(db, 'system', 'session.recover', null, { interrupted: Number(r.changes) });
+  }
+
+  get runningCount() { return this.live.size; }
+
+  enqueue(input: EnqueueInput): string {
+    const id = newId('ses');
+    this.db.prepare("INSERT INTO sessions (id, agent_id, task_id, status, model, prompt, spec) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
+      .run(id, input.agentId, input.taskId ?? null, input.spec.model, input.spec.prompt, JSON.stringify(input.spec));
+    audit(this.db, input.actor, 'session.enqueue', id, { agentId: input.agentId, taskId: input.taskId });
+    this.emit('status', id, 'queued');
+    this.pump();
+    return id;
+  }
+
+  /** Start queued sessions while below the concurrency limit and the org is not paused. */
+  pump() {
+    if (getPolicy(this.db, 'org.paused', false)) return;
+    const max = getPolicy(this.db, 'runtime.maxConcurrentSessions', 2);
+    while (this.live.size < max) {
+      const next = this.db.prepare("SELECT id, spec FROM sessions WHERE status = 'queued' ORDER BY queued_at, rowid LIMIT 1").get() as { id: string; spec: string } | undefined;
+      if (!next) return;
+      this.launch(next.id, JSON.parse(next.spec) as RunSpec);
+    }
+  }
+
+  private launch(id: string, spec: RunSpec) {
+    this.setStatus(id, 'starting');
+    const insEvent = this.db.prepare('INSERT INTO session_events (session_id, kind, data) VALUES (?, ?, ?)');
+    const handle = this.adapter.start(spec, (e: RuntimeEvent) => {
+      if (e.kind === 'init') {
+        this.db.prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ?').run(e.claudeSessionId, id);
+        this.setStatus(id, 'running');
+      } else if (e.kind === 'rate_limit') {
+        this.lastRateLimit = e.info;
+        this.emit('rateLimit', e.info);
+      } else if (e.kind === 'result') {
+        this.db.prepare(`UPDATE sessions SET result_text = ?, claude_session_id = ?, cost_usd_estimate = ?, input_tokens = ?, output_tokens = ?, num_turns = ? WHERE id = ?`)
+          .run(e.text, e.claudeSessionId, e.costUsdEstimate, e.inputTokens, e.outputTokens, e.numTurns, id);
+      }
+      if (e.kind !== 'unknown') insEvent.run(id, e.kind, JSON.stringify(e));
+      this.emit('event', id, e);
+    });
+    const timeoutMs = getPolicy(this.db, 'runtime.sessionTimeoutMs', 20 * 60_000);
+    const timer = setTimeout(() => this.stop(id, 'system', 'timeout'), timeoutMs);
+    timer.unref(); // the child process keeps the server alive, not the watchdog
+    this.live.set(id, { handle, timer });
+    this.db.prepare("UPDATE sessions SET pid = ?, started_at = datetime('now') WHERE id = ?").run(handle.pid ?? null, id);
+
+    handle.done.then((code) => {
+      const entry = this.live.get(id);
+      clearTimeout(timer);
+      this.live.delete(id);
+      const row = this.get(id)!;
+      const hasResult = row.result_text !== null;
+      const failedResult = this.db.prepare("SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'result' AND json_extract(data, '$.ok') = 0").get(id);
+      const status: SessionStatus = entry?.stopReason ?? (code === 0 && hasResult && !failedResult ? 'completed' : 'failed');
+      this.finish(id, status, status === 'failed' ? `exit code ${code}` : null);
+      this.pump();
+    });
+  }
+
+  stop(id: string, actor: string, reason: SessionStatus = 'stopped') {
+    const entry = this.live.get(id);
+    if (entry) { entry.stopReason = reason; entry.handle.stop(); }
+    else if (this.get(id)?.status === 'queued') this.finish(id, 'stopped', null);
+    audit(this.db, actor, `session.${reason}`, id);
+  }
+
+  /** Owner kill switch: cancel the queue and kill every live process tree. */
+  stopAll(actor: string): number {
+    const queued = this.db.prepare("SELECT id FROM sessions WHERE status = 'queued'").all() as { id: string }[];
+    for (const q of queued) this.finish(q.id, 'stopped', 'stop-all');
+    const n = this.live.size;
+    for (const [id, entry] of this.live) { entry.stopReason = 'stopped'; entry.handle.stop(); this.emit('status', id, 'stopping'); }
+    audit(this.db, actor, 'session.stopAll', null, { live: n, queued: queued.length });
+    return n + queued.length;
+  }
+
+  get(id: string): SessionRow | undefined {
+    return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
+  }
+
+  private setStatus(id: string, s: SessionStatus) {
+    this.db.prepare('UPDATE sessions SET status = ? WHERE id = ?').run(s, id);
+    this.emit('status', id, s);
+  }
+
+  private finish(id: string, s: SessionStatus, error: string | null) {
+    this.db.prepare("UPDATE sessions SET status = ?, error = COALESCE(?, error), ended_at = datetime('now') WHERE id = ?").run(s, error, id);
+    this.emit('status', id, s);
+  }
+}
