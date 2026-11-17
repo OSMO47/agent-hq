@@ -44,7 +44,9 @@ export default function Tasks() {
 
   const tasks = useResource<{ tasks: any[]; dependencies: any[] }>(pid ? `/api/tasks?projectId=${pid}` : null, ['task', 'session.status']);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [creating, setCreating] = useState<'project' | 'task' | null>(null);
+  const [creating, setCreating] = useState<'project' | 'task' | 'brief' | null>(null);
+  const pstat = useResource<any>(pid ? `/api/projects/${pid}/status` : null, ['project', 'task', 'session.status', 'paused']);
+  const [runMsg, setRunMsg] = useState('');
 
   const agents = org.data?.agents ?? [];
   const modelFor = useModelFor(agents);
@@ -68,7 +70,16 @@ export default function Tasks() {
         <button className="btn" onClick={() => setCreating('project')}>New project</button>
         <div className="ml-auto flex items-center gap-3 text-[11.5px] text-faint">
           {SIDE.map((s) => <span key={s}><Status s={s} /> {all.filter((t) => t.status === s).length}</span>)}
-          <button className="btn btn-primary" disabled={!pid} onClick={() => setCreating('task')}>New task</button>
+          {pstat.data?.planning && <a className="flex items-center gap-1.5 text-kin" href={`#/sessions/${pstat.data.planning.id}`}><Dot status="running" />CEO planning…</a>}
+          {runMsg && <span className="text-dim">{runMsg}</span>}
+          <button className="btn" disabled={!pid || !pstat.data?.ready || pstat.data?.paused} title={pstat.data?.paused ? 'Organization is paused' : 'Start every assigned task whose dependencies are done'}
+            onClick={async () => {
+              try { const r = await api('POST', `/api/projects/${pid}/run-ready`); setRunMsg(`Started ${r.started}${r.errors.length ? ` · ${r.errors.length} error(s)` : ''}`); }
+              catch (e) { setRunMsg((e as Error).message); }
+              tasks.reload(); setTimeout(() => setRunMsg(''), 6000);
+            }}>▶ Run ready ({pstat.data?.ready ?? 0})</button>
+          <button className="btn" disabled={!pid} onClick={() => setCreating('task')}>New task</button>
+          <button className="btn btn-primary" disabled={!pid} onClick={() => setCreating('brief')}>Brief the CEO</button>
         </div>
       </div>
 
@@ -102,6 +113,7 @@ export default function Tasks() {
       </div>
 
       {creating === 'project' && <NewProject onDone={(id) => { setCreating(null); projects.reload(); if (id) setPid(id); }} />}
+      {creating === 'brief' && pid && <CeoBrief status={pstat.data} reload={pstat.reload} projectId={pid} onClose={() => setCreating(null)} />}
       {creating === 'task' && pid && <NewTask projectId={pid} agents={agents} tasks={all} onDone={() => { setCreating(null); tasks.reload(); }} />}
       {openId && <TaskDrawer id={openId} agents={agents} allTasks={all} onClose={() => setOpenId(null)} onChange={tasks.reload} />}
     </div>
@@ -124,6 +136,54 @@ function NewProject({ onDone }: { onDone: (id?: string) => void }) {
         {err && <div className="text-[12px] text-shu">{err}</div>}
         <button className="btn btn-primary">Create project</button>
       </form>
+    </Drawer>
+  );
+}
+
+/** Owner → CEO: write a brief, the CEO reads the workspace (read-only) and turns it into tasks on this board. */
+function CeoBrief({ projectId, status, reload, onClose }: { projectId: string; status: any; reload: () => void; onClose: () => void }) {
+  const [text, setText] = useState(''); const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const planning = status?.planning;
+  const dirty = status?.git?.files > 0;
+  const thread = [...(status?.messages ?? [])].reverse();
+  return (
+    <Drawer open onClose={onClose} title="Brief the CEO">
+      <div className="space-y-4">
+        <p className="text-[12px] leading-relaxed text-dim">
+          Describe what you want. The CEO reads the project files (read-only), then creates 2–8 tasks with assignees and dependencies.
+          Department leaders rate difficulty when each task runs; nothing runs until you press <span className="text-fg">Run</span>.
+        </p>
+        <div className="truncate font-mono text-[11px] text-faint" title={status?.workspace}>{status?.workspace}</div>
+        {status && status.git === null && <div className="rounded-md border border-line px-3 py-2 text-[11.5px] text-faint">Workspace is not a git repository — agent edits cannot be reviewed or reverted with git.</div>}
+        {dirty && <div className="rounded-md border border-kin/30 px-3 py-2 text-[11.5px] text-kin">{status.git.files} uncommitted change(s) in the workspace. Commit them first so agent edits are easy to review.</div>}
+
+        {thread.length > 0 && <div className="space-y-2">
+          {thread.map((m: any) => (
+            <div key={m.id} className={`rounded-md border p-3 ${m.from_id === 'owner' ? 'border-line bg-ink' : 'border-ai/30'}`}>
+              <div className="mb-1 flex justify-between text-[11px] text-faint"><span>{m.from_id === 'owner' ? 'You → CEO' : 'CEO → You'}</span><span>{ago(m.created_at)}</span></div>
+              <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed">{m.body}</div>
+            </div>
+          ))}
+        </div>}
+
+        {planning ? (
+          <div className="flex items-center gap-2 rounded-md border border-kin/30 px-3 py-2 text-[12px] text-kin">
+            <Dot status="running" /> The CEO is reading the project and planning ({planning.status}).
+            <a className="ml-auto underline" href={`#/sessions/${planning.id}`}>Watch live</a>
+          </div>
+        ) : (
+          <form className="space-y-3" onSubmit={async (e) => {
+            e.preventDefault(); setErr(''); setBusy(true);
+            try { await api('POST', `/api/projects/${projectId}/brief`, { text }); setText(''); reload(); } catch (x) { setErr((x as Error).message); }
+            setBusy(false);
+          }}>
+            <textarea className="field" rows={7} autoFocus required value={text} onChange={(e) => setText(e.target.value)}
+              placeholder="e.g. Add a dark-mode toggle to the settings page and remember the choice between visits." />
+            {err && <div className="text-[12px] text-shu">{err}</div>}
+            <button className="btn btn-primary" disabled={busy || !text.trim() || status?.paused}>{status?.paused ? 'Organization paused' : 'Send to CEO'}</button>
+          </form>
+        )}
+      </div>
     </Drawer>
   );
 }
