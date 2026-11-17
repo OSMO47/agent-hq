@@ -133,3 +133,13 @@ Next: CEO orchestration (owner request → CEO plan → tasks for leaders/specia
 4. **Escalation:** work sessions are told they may end with `ESCALATE: <reason>`; that, or hitting max turns, bumps difficulty one level and resumes the same Claude conversation on the stronger model (`--resume` + new `--model`). Toggle `models.autoEscalate`.
 5. Usage limit → wait & resume; never auto-downgrade.
 Tests: 27/27. Migrations add `tasks.difficulty`, `agents.model_mode`, `sessions.purpose` to existing DBs.
+
+### 2026-11-17 — CEO intake UI + Maestro-style dashboard
+Done:
+- **Brief the CEO** drawer (Task board): owner brief → read-only CEO planning session → tasks with assignees/deps. Shows the owner↔CEO thread, live "CEO planning…" state, and warns when the workspace is not git or has uncommitted changes. **Run ready (N)** starts every assigned task whose deps are done.
+- Dashboard redesigned on owner request to look like Maestro (layout/feel only; all code written fresh, no Maestro code copied):
+  - Three panes: **Left Bar** = organization grouped by department (collapsible; collapsed groups show per-agent status bars), agent rows with ready/busy/suspended dots, fixed-model chips, current task; pink **Brief CEO / New Task** buttons. **Center** = selected agent's sessions as tabs, each a chat-style conversation (owner prompt bubble, agent card with tool calls + Markdown, composer that resumes the same Claude conversation). **Right Bar** = Tasks / Activity / History, scoped to the selected agent.
+  - Monospace type, token-based themes: Pedurple (default), Dracula, Nord, GitHub Light (☰ menu). Ctrl+1…5 pages, Ctrl+. right bar.
+  - Global Stop all, pause, Claude 5h meter and cost estimate always in the header.
+  - Dependency-free Markdown renderer (React elements only, no innerHTML).
+Verified: `npm test` 29/29 · `vite build` OK · headless Edge screenshots of agent view, task board, brief drawer, overview against a throwaway seeded DB.

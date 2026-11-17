@@ -1,21 +1,46 @@
 @import "tailwindcss";
 
-/* Sumi-ink dark theme: warm off-white text on ink, one vermilion (shu) accent used sparingly. */
+/*
+ * Three-pane, keyboard-first look with monospace type and a single hot accent.
+ * Every colour is a token; themes only swap tokens (see [data-theme] blocks below).
+ *   ink    page background        panel  bars / cards       raise  hover / selected
+ *   line   hairlines              fg/dim/faint  text levels
+ *   accent primary actions + selection     shu  danger / errors
+ *   ai     info / links           matcha  idle-ready / success     kin  busy / warning
+ */
 @theme {
-  --color-ink: #0b0c0e;
-  --color-panel: #111215;
-  --color-raise: #17181c;
-  --color-line: #23252b;
-  --color-line-strong: #2f323a;
-  --color-fg: #e9e6df;
-  --color-dim: #9a988f;
-  --color-faint: #63625c;
-  --color-shu: #e5533d;
-  --color-ai: #6d8fc7;
-  --color-matcha: #7fb38a;
-  --color-kin: #d4a84b;
-  --font-sans: "Inter", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --color-ink: #150f1b;
+  --color-panel: #1b1422;
+  --color-raise: #271c31;
+  --color-line: #31243c;
+  --color-line-strong: #46344f;
+  --color-fg: #f3ecf7;
+  --color-dim: #b9a9c6;
+  --color-faint: #7f6d8d;
+  --color-accent: #ff4fa3;
+  --color-accent-fg: #1a0f17;
+  --color-shu: #ff5d73;
+  --color-ai: #9d8cff;
+  --color-matcha: #57d98a;
+  --color-kin: #f2c14e;
+  --font-sans: "JetBrains Mono", "Cascadia Code", "Cascadia Mono", ui-monospace, Consolas, monospace;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Cascadia Mono", ui-monospace, Consolas, monospace;
+}
+
+[data-theme="dracula"] {
+  --color-ink: #1e1f29; --color-panel: #21222c; --color-raise: #2c2e3b; --color-line: #343746; --color-line-strong: #44475a;
+  --color-fg: #f8f8f2; --color-dim: #c3c5d4; --color-faint: #7c80a0; --color-accent: #bd93f9; --color-accent-fg: #191a21;
+  --color-shu: #ff5555; --color-ai: #8be9fd; --color-matcha: #50fa7b; --color-kin: #f1fa8c;
+}
+[data-theme="nord"] {
+  --color-ink: #2a303c; --color-panel: #2e3440; --color-raise: #3b4252; --color-line: #3b4252; --color-line-strong: #4c566a;
+  --color-fg: #eceff4; --color-dim: #c5cdd9; --color-faint: #808ba0; --color-accent: #88c0d0; --color-accent-fg: #242933;
+  --color-shu: #bf616a; --color-ai: #81a1c1; --color-matcha: #a3be8c; --color-kin: #ebcb8b;
+}
+[data-theme="github"] {
+  --color-ink: #f6f8fa; --color-panel: #ffffff; --color-raise: #eef1f4; --color-line: #e1e4e8; --color-line-strong: #c9ced4;
+  --color-fg: #1f2328; --color-dim: #4d5560; --color-faint: #7d8590; --color-accent: #cf2a7b; --color-accent-fg: #ffffff;
+  --color-shu: #cf222e; --color-ai: #0969da; --color-matcha: #1a7f37; --color-kin: #9a6700;
 }
 
 html, body, #root { height: 100%; }
@@ -23,31 +48,39 @@ body {
   background: var(--color-ink);
   color: var(--color-fg);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 12.5px;
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "tnum" 1, "cv11" 1;
+  font-variant-ligatures: none;
 }
-::selection { background: color-mix(in srgb, var(--color-shu) 35%, transparent); }
+::selection { background: color-mix(in srgb, var(--color-accent) 35%, transparent); }
 * { scrollbar-width: thin; scrollbar-color: var(--color-line-strong) transparent; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-.rise { animation: rise 220ms cubic-bezier(.2,.7,.2,1) both; }
+.rise { animation: rise 200ms cubic-bezier(.2,.7,.2,1) both; }
 @keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 .breathe { animation: breathe 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .rise, .breathe { animation: none; } }
 
-.label { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-faint); font-weight: 500; }
-.btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 6px;
-  border: 1px solid var(--color-line-strong); background: var(--color-raise); color: var(--color-fg); font-size: 12px;
-  transition: border-color .15s, background .15s; }
+.label { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-faint); font-weight: 600; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 6px;
+  border: 1px solid var(--color-line-strong); background: var(--color-raise); color: var(--color-fg); font-size: 11.5px;
+  transition: border-color .15s, background .15s, filter .15s; white-space: nowrap; }
 .btn:hover:not(:disabled) { border-color: var(--color-dim); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn-primary { background: var(--color-fg); color: var(--color-ink); border-color: var(--color-fg); font-weight: 600; }
-.btn-primary:hover:not(:disabled) { background: #fff; }
-.btn-danger { color: var(--color-shu); border-color: color-mix(in srgb, var(--color-shu) 45%, transparent); }
+.btn-primary { background: var(--color-accent); color: var(--color-accent-fg); border-color: var(--color-accent); font-weight: 700; }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.1); border-color: var(--color-accent); }
+.btn-danger { color: var(--color-shu); border-color: color-mix(in srgb, var(--color-shu) 45%, transparent); background: transparent; }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-shu) 12%, transparent); border-color: var(--color-shu); }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--color-dim); }
+.btn-ghost:hover:not(:disabled) { color: var(--color-fg); border-color: transparent; background: var(--color-raise); }
 .field { width: 100%; height: 30px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--color-line-strong);
-  background: var(--color-ink); color: var(--color-fg); font-size: 12.5px; outline: none; }
+  background: var(--color-ink); color: var(--color-fg); font-size: 12px; outline: none; font-family: inherit; }
 textarea.field { height: auto; padding: 8px 10px; resize: vertical; }
-.field:focus { border-color: var(--color-ai); }
+.field:focus { border-color: var(--color-accent); }
 .card { background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 10px; }
+/* Small rounded chip, tinted by currentColor (set a text-* class). */
+.pill { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 10.5px;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent); background: color-mix(in srgb, currentColor 10%, transparent); white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); background: color-mix(in srgb, currentColor 12%, transparent); }

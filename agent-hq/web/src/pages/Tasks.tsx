@@ -33,7 +33,7 @@ function DiffBadge({ t, agents, model }: { t: any; agents: any[]; model: string 
   );
 }
 
-export default function Tasks() {
+export default function Tasks({ param }: { param?: string }) {
   const projects = useResource<any[]>('/api/projects', ['project']);
   const org = useResource<{ agents: any[] }>('/api/org', ['org']);
   const [pid, setPid] = useState<string | null>(() => { try { return localStorage.getItem('hq.project'); } catch { return null; } });
@@ -44,6 +44,13 @@ export default function Tasks() {
 
   const tasks = useResource<{ tasks: any[]; dependencies: any[] }>(pid ? `/api/tasks?projectId=${pid}` : null, ['task', 'session.status']);
   const [openId, setOpenId] = useState<string | null>(null);
+  // Deep links from the Left/Right bars: #/tasks/brief, #/tasks/new, #/tasks/<taskId>
+  useEffect(() => {
+    if (param === 'brief') setCreating('brief');
+    else if (param === 'new') setCreating('task');
+    else if (param) api('GET', `/api/tasks/${param}`).then((r) => { setPid(r.task.project_id); setOpenId(param); }).catch(() => {});
+  }, [param]);
+  const clearLink = () => { if (param) location.hash = '#/tasks'; };
   const [creating, setCreating] = useState<'project' | 'task' | 'brief' | null>(null);
   const pstat = useResource<any>(pid ? `/api/projects/${pid}/status` : null, ['project', 'task', 'session.status', 'paused']);
   const [runMsg, setRunMsg] = useState('');
@@ -69,7 +76,7 @@ export default function Tasks() {
         </select>
         <button className="btn" onClick={() => setCreating('project')}>New project</button>
         <div className="ml-auto flex items-center gap-3 text-[11.5px] text-faint">
-          {SIDE.map((s) => <span key={s}><Status s={s} /> {all.filter((t) => t.status === s).length}</span>)}
+          {SIDE.map((s) => <span key={s} className="whitespace-nowrap"><Status s={s} /> {all.filter((t) => t.status === s).length}</span>)}
           {pstat.data?.planning && <a className="flex items-center gap-1.5 text-kin" href={`#/sessions/${pstat.data.planning.id}`}><Dot status="running" />CEO planning…</a>}
           {runMsg && <span className="text-dim">{runMsg}</span>}
           <button className="btn" disabled={!pid || !pstat.data?.ready || pstat.data?.paused} title={pstat.data?.paused ? 'Organization is paused' : 'Start every assigned task whose dependencies are done'}
@@ -113,9 +120,9 @@ export default function Tasks() {
       </div>
 
       {creating === 'project' && <NewProject onDone={(id) => { setCreating(null); projects.reload(); if (id) setPid(id); }} />}
-      {creating === 'brief' && pid && <CeoBrief status={pstat.data} reload={pstat.reload} projectId={pid} onClose={() => setCreating(null)} />}
-      {creating === 'task' && pid && <NewTask projectId={pid} agents={agents} tasks={all} onDone={() => { setCreating(null); tasks.reload(); }} />}
-      {openId && <TaskDrawer id={openId} agents={agents} allTasks={all} onClose={() => setOpenId(null)} onChange={tasks.reload} />}
+      {creating === 'brief' && pid && <CeoBrief status={pstat.data} reload={pstat.reload} projectId={pid} onClose={() => { setCreating(null); clearLink(); }} />}
+      {creating === 'task' && pid && <NewTask projectId={pid} agents={agents} tasks={all} onDone={() => { setCreating(null); tasks.reload(); clearLink(); }} />}
+      {openId && <TaskDrawer id={openId} agents={agents} allTasks={all} onClose={() => { setOpenId(null); clearLink(); }} onChange={tasks.reload} />}
     </div>
   );
 }

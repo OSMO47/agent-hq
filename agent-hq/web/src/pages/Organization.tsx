@@ -26,9 +26,9 @@ function AgentChip({ a, onOpen, big }: { a: Agent; onOpen: (a: Agent) => void; b
   );
 }
 
-export default function Organization() {
+export default function Organization({ param }: { param?: string }) {
   const { data, reload } = useResource<{ departments: any[]; agents: Agent[] }>('/api/org', ['session.status', 'org']);
-  const [sel, setSel] = useState<Agent | null>(null);
+  const [sel, setSel] = useState<Agent | null>(param ? ({ id: param } as Agent) : null);
   const [err, setErr] = useState<string | null>(null);
   if (!data) return <Empty>Loading…</Empty>;
 
