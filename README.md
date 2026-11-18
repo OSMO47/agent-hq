@@ -21,8 +21,8 @@ Agents run on your Claude subscription through the official CLI (`claude -p`). E
 ## Run it
 
 ```powershell
-git clone https://github.com/OSMO47/agent-hq.git
-cd agent-hq/agent-hq
+git clone https://github.com/OSMO47/osmo-agent.git
+cd osmo-agent/agent-hq
 npm install
 npm run build        # builds the dashboard once
 npm start            # http://127.0.0.1:4317
