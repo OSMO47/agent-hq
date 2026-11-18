@@ -3,7 +3,7 @@ import { TaskError } from './tasks.ts';
 
 const LIVE = "('queued','starting','running')";
 
-/** What deleting a project would remove from Agent HQ (the workspace folder itself is never touched). */
+/** What deleting a project would remove from OSMO AGENT (the workspace folder itself is never touched). */
 export function projectFootprint(db: DB, id: string) {
   const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as { id: string; name: string; repo_path: string | null } | undefined;
   if (!p) throw new TaskError('project not found');
@@ -18,7 +18,7 @@ export function projectFootprint(db: DB, id: string) {
 }
 
 /**
- * Remove a project and everything Agent HQ recorded for it (tasks, their history/comments/deps, sessions + events,
+ * Remove a project and everything OSMO AGENT recorded for it (tasks, their history/comments/deps, sessions + events,
  * messages, project memories). Refuses while any of its sessions is queued or running. Files on disk are not touched.
  */
 export function deleteProject(db: DB, id: string, actor: string) {

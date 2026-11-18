@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { type DB, newId, audit, getPolicy, tx } from '../db.ts';
 import { createTask, TaskError } from './tasks.ts';
-import { buildSpec, projectWorkspace, type AgentRow } from './taskRunner.ts';
+import { buildSpec, projectWorkspace, personalityPrompt, type AgentRow } from './taskRunner.ts';
 import type { SessionManager, SessionStatus } from '../runtime/sessionManager.ts';
 
 const READ_ONLY = ['Read', 'Glob', 'Grep'];
@@ -115,7 +115,7 @@ export class MeetingRoom extends EventEmitter {
     const speaker = this.agent(people[said % people.length])!;
     const round = Math.floor(said / people.length) + 1;
     const model = speaker.model_mode === 'fixed' ? speaker.model : getPolicy(this.db, 'models.meeting', 'sonnet');
-    const spec = { ...buildSpec(speaker, this.speakerPrompt(m, speaker, round, people), this.cwd(m), 8, 'default'),
+    const spec = { ...buildSpec(speaker, this.speakerPrompt(m, speaker, round, people), this.cwd(m), 8, 'default', personalityPrompt(this.db, speaker.id)),
       model, tools: READ_ONLY, allowedTools: READ_ONLY };
     const sid = this.sm.enqueue({ agentId: speaker.id, actor: 'meeting', spec, purpose: 'meeting', projectId: m.project_id });
     this.db.prepare('UPDATE meetings SET current_session = ? WHERE id = ?').run(sid, id);

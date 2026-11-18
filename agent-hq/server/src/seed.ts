@@ -1,4 +1,5 @@
 import { type DB, tx, audit, setPolicy } from './db.ts';
+import { ROSTER } from './roster.ts';
 
 /** Tool permission presets. Anything not allowed is denied in `claude -p` (no interactive prompt). */
 export const PERMISSIONS = {
@@ -20,6 +21,7 @@ export const DEFAULT_POLICIES: Record<string, unknown> = {
   'runtime.maxConcurrentSessions': 2,
   'runtime.sessionTimeoutMs': 20 * 60_000,
   'runtime.maxTurnsPerSession': 30,
+  'runtime.maxContinuations': 1,       // out of turns at the top model: continue the same conversation this many times before failing
   'org.paused': false,
   'org.autoPilot': true,               // CEO assigns, ready work starts, clean results auto-approve
   'models.meeting': 'sonnet',          // model for meeting speakers (design agents stay on opus)
@@ -29,12 +31,12 @@ export const DEFAULT_POLICIES: Record<string, unknown> = {
 };
 
 const DEPARTMENTS: [id: string, name: string, leader: [id: string, name: string, role: string]][] = [
-  ['tech', 'Technology', ['cto', 'Kenji', 'CTO / Technical Director']],
-  ['eng', 'Engineering', ['eng-dir', 'Haruto', 'Engineering Director']],
-  ['qa', 'Quality Assurance', ['qa-dir', 'Yui', 'QA Director']],
-  ['sec', 'Security', ['sec-dir', 'Ren', 'Security Director']],
-  ['product', 'Product & Design', ['prod-dir', 'Sakura', 'Product & Design Director']],
-  ['docs', 'Documentation', ['docs-dir', 'Aoi', 'Documentation Director']],
+  ['tech', 'Technology', ['cto', 'Hachiware', 'CTO / Technical Director']],
+  ['eng', 'Engineering', ['eng-dir', 'Shisa', 'Engineering Director']],
+  ['qa', 'Quality Assurance', ['qa-dir', 'Kurimanju', 'QA Director']],
+  ['sec', 'Security', ['sec-dir', 'Usagi', 'Security Director']],
+  ['product', 'Product & Design', ['prod-dir', 'Chiikawa', 'Product & Design Director']],
+  ['docs', 'Documentation', ['docs-dir', 'Momonga', 'Documentation Director']],
 ];
 
 const SPECIALISTS: [dept: string, reportsTo: string, role: string, model: string, preset: keyof typeof PERMISSIONS][] = [
@@ -68,7 +70,7 @@ export function seed(db: DB): boolean {
 
     const insAgent = db.prepare(`INSERT INTO agents (id, name, role, level, department_id, reports_to, model, instructions, permissions)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    insAgent.run('ceo', 'Akira', 'CEO / Chief Orchestrator', 1, null, null, 'opus',
+    insAgent.run('ceo', 'Rakko', 'CEO / Chief Orchestrator', 1, null, null, 'opus',
       'You lead the AI organization. Analyze owner requirements, plan, break work into tasks, delegate to department leaders, review reports, and escalate important decisions to the owner. Never grant yourself permissions.',
       JSON.stringify(PERMISSIONS.planner));
 
@@ -80,10 +82,12 @@ export function seed(db: DB): boolean {
         JSON.stringify(PERMISSIONS.planner));
     }
     for (const [dept, boss, role, model, preset] of SPECIALISTS) {
-      insAgent.run(slug(role), role, role, 3, dept, boss, model,
+      insAgent.run(slug(role), ROSTER[slug(role)]?.name ?? role, role, 3, dept, boss, model,
         `You are a ${role}. Complete the assigned task inside your workspace, keep changes focused, and finish with a short report: what you did, files changed, open issues.`,
         JSON.stringify(PERMISSIONS[preset]));
     }
+    const setTitle = db.prepare('UPDATE agents SET title = ?, personality = ? WHERE id = ?');
+    for (const [id, p] of Object.entries(ROSTER)) setTitle.run(p.title, p.personality, id);
     // Owner rule: design / UX / UI work always runs on opus, regardless of difficulty.
     db.prepare("UPDATE agents SET model = 'opus', model_mode = 'fixed' WHERE id IN ('prod-dir', 'ui-ux-designer', 'ux-researcher')").run();
     db.prepare(`INSERT INTO memories (scope, key, content, protected, updated_by) VALUES ('global', 'policy.owner-authority', ?, 1, 'system')`)

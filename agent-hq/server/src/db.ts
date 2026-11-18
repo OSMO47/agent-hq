@@ -3,6 +3,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { ROSTER } from './roster.ts';
 
 export type DB = DatabaseSync;
 
@@ -35,6 +36,22 @@ function migrate(db: DB) {
   if (hasTable('projects') && !cols('projects').includes('deploy_cmd')) {
     db.exec('ALTER TABLE projects ADD COLUMN deploy_cmd TEXT');
     db.exec('ALTER TABLE projects ADD COLUMN deploy_decided_at TEXT');
+  }
+  if (hasTable('tasks') && !cols('tasks').includes('continuations')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN continuations INTEGER NOT NULL DEFAULT 0');
+  }
+  if (hasTable('agents')) {
+    // Owner (2026-11-18): the team is named after Chiikawa characters. Only renames names still at the old default.
+    const rename = db.prepare('UPDATE agents SET name = ? WHERE id = ? AND name = ?');
+    for (const [id, from, to] of [['ceo', 'Akira', 'Rakko'], ['cto', 'Kenji', 'Hachiware'], ['eng-dir', 'Haruto', 'Shisa'], ['qa-dir', 'Yui', 'Kurimanju'],
+      ['sec-dir', 'Ren', 'Usagi'], ['prod-dir', 'Sakura', 'Chiikawa'], ['docs-dir', 'Aoi', 'Momonga']]) rename.run(to, id, from);
+    // Positions + names for everyone. Members still named after their role get their roster name; owner edits are kept.
+    if (!cols('agents').includes('title')) db.exec('ALTER TABLE agents ADD COLUMN title TEXT');
+    const name = db.prepare('UPDATE agents SET name = ? WHERE id = ? AND name = role');
+    const title = db.prepare('UPDATE agents SET title = ? WHERE id = ? AND title IS NULL');
+    if (!cols('agents').includes('personality')) db.exec('ALTER TABLE agents ADD COLUMN personality TEXT');
+    const persona = db.prepare('UPDATE agents SET personality = ? WHERE id = ? AND personality IS NULL');
+    for (const [id, p] of Object.entries(ROSTER)) { name.run(p.name, id); title.run(p.title, id); persona.run(p.personality, id); }
   }
   if (hasTable('sessions') && !cols('sessions').includes('project_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id)');

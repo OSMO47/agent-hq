@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS agents (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
   role          TEXT NOT NULL,
+  title         TEXT,                     -- position shown to people (e.g. "General Manager"); role is what the agent does
+  personality   TEXT,                     -- speaking style / character; tone only, never overrides the work
   level         INTEGER NOT NULL CHECK (level BETWEEN 1 AND 3), -- 1 CEO, 2 leader, 3 specialist
   department_id TEXT REFERENCES departments(id),
   reports_to    TEXT REFERENCES agents(id),
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   department_id TEXT REFERENCES departments(id),
   review_status TEXT CHECK (review_status IN ('pending','approved','changes_requested')),
   attempts      INTEGER NOT NULL DEFAULT 0,
+  continuations INTEGER NOT NULL DEFAULT 0, -- turn-limit continuations used in the current run
   lock_session  TEXT,                     -- non-null while a session owns it (prevents duplicate execution)
   created_by    TEXT NOT NULL DEFAULT 'owner',
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),

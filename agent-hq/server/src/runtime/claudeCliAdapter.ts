@@ -25,6 +25,10 @@ export function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   // Keep Claude's own auth variables (ANTHROPIC_*, CLAUDE_*) so supported CLI auth keeps working.
   for (const [k, v] of Object.entries(env)) if (!SECRET_ENV.test(k) || /^(ANTHROPIC_|CLAUDE_)/.test(k)) out[k] = v;
+  // Debugger hooks inherited from whatever launched HQ (e.g. HQ started from inside a Claude Code session) would make
+  // every agent's claude try to open the same inspector port and exit with EADDRINUSE.
+  for (const k of Object.keys(out)) if (/^BUN_INSPECT/i.test(k)) delete out[k];
+  if (out.NODE_OPTIONS && /--inspect/.test(out.NODE_OPTIONS)) delete out.NODE_OPTIONS;
   return out;
 }
 

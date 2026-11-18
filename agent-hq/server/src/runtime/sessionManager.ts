@@ -51,7 +51,9 @@ export class SessionManager extends EventEmitter {
     this.lastRateLimitAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
     this.db.prepare("INSERT INTO kv (key, value, updated_at) VALUES ('claude.rateLimit', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .run(JSON.stringify(info), this.lastRateLimitAt);
-    if (info.status && info.status !== 'allowed' && info.resetsAt) this.markLimited(info.resetsAt * 1000);
+    // Only a real block stops the queue. 'allowed_warning' (e.g. 57% of the weekly window) still runs:
+    // treating it as a limit froze every session until the 7-day reset.
+    if (info.status && !String(info.status).startsWith('allowed') && info.resetsAt) this.markLimited(info.resetsAt * 1000);
     this.emit('rateLimit', info);
   }
 

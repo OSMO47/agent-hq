@@ -145,7 +145,7 @@ export class Deployer extends EventEmitter {
           .all(projectId, p.deploy_decided_at) as { title: string }[]).map((t) => `- ${t.title}`);
         if (gitTarget(p.repo_path)!.files === 0) log('(nothing to commit)\n\n');
         else ok = await run('git add -A', 'git', ['add', '-A'])
-          && await run('git commit', 'git', ['commit', '-m', `Agent HQ: งานที่เสร็จแล้ว\n\n${titles.join('\n') || '- (no task titles)'}`]);
+          && await run('git commit', 'git', ['commit', '-m', `OSMO AGENT: งานที่เสร็จแล้ว\n\n${titles.join('\n') || '- (no task titles)'}`]);
       }
       if (ok && opts.push) {
         const t = gitTarget(p.repo_path)!;

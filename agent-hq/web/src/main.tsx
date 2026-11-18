@@ -1,8 +1,15 @@
 import { StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+// Rounded fonts for the Chiikawa theme (latin + thai subsets only, bundled: no network fetch).
+import '@fontsource/m-plus-rounded-1c/latin-400.css';
+import '@fontsource/m-plus-rounded-1c/latin-700.css';
+import '@fontsource/mali/latin-400.css';
+import '@fontsource/mali/thai-400.css';
+import '@fontsource/mali/thai-600.css';
 import './index.css';
 import { api, useConnected, useResource, useLive, ago } from './api';
 import { Empty, Status, ErrorBoundary } from './ui';
+import { Avatar } from './Avatar';
 import Overview from './pages/Overview';
 import Organization from './pages/Organization';
 import Tasks from './pages/Tasks';
@@ -10,6 +17,7 @@ import Sessions from './pages/Sessions';
 import Settings from './pages/Settings';
 import Agent from './pages/Agent';
 import Meetings from './pages/Meetings';
+import Seats from './pages/Seats';
 import { InboxTab } from './Inbox';
 
 const PAGES = [
@@ -18,9 +26,10 @@ const PAGES = [
   { id: 'meetings', name: 'ห้องประชุม', key: '6', C: Meetings },
   { id: 'sessions', name: 'Live sessions', key: '3', C: Sessions },
   { id: 'org', name: 'Organization', key: '4', C: Organization },
+  { id: 'seats', name: 'ผังที่นั่ง', key: '7', C: Seats },
   { id: 'settings', name: 'Settings', key: '5', C: Settings },
 ] as const;
-const THEMES = [['pedurple', 'Pedurple'], ['dracula', 'Dracula'], ['nord', 'Nord'], ['github', 'GitHub Light']] as const;
+const THEMES = [['chiikawa', 'Chiikawa'], ['pedurple', 'Pedurple'], ['dracula', 'Dracula'], ['nord', 'Nord'], ['github', 'GitHub Light']] as const;
 
 const store = {
   get: (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
@@ -35,7 +44,11 @@ function useHashRoute() {
 }
 
 function useTheme() {
-  const [t, setT] = useState(() => store.get('hq.theme', 'pedurple'));
+  // Owner switched the whole app to the Chiikawa theme: move everyone to it once; picking another theme afterwards sticks.
+  const [t, setT] = useState(() => {
+    if (store.get('hq.theme.v', '') !== '2') { store.set('hq.theme.v', '2'); return 'chiikawa'; }
+    return store.get('hq.theme', 'chiikawa');
+  });
   useEffect(() => { document.documentElement.dataset.theme = t; store.set('hq.theme', t); }, [t]);
   return [t, setT] as const;
 }
@@ -81,7 +94,7 @@ function App() {
   }, []);
   useEffect(() => {
     const items = inboxAll.data; if (!items) return;
-    document.title = items.length ? `(${items.length}) Agent HQ` : 'Agent HQ';
+    document.title = items.length ? `(${items.length}) OSMO AGENT` : 'OSMO AGENT';
     const key = (i: any) => (i.kind === 'finished' ? (i.deploy ? null : `finished:${i.project.id}:${i.done.length}`) : i.kind === 'decision' ? `decision:${i.task.id}` : i.kind === 'meeting' ? `meeting:${i.task.id}` : null);
     const keys = items.map(key).filter(Boolean) as string[];
     if (seen.current === null) { seen.current = new Set(keys); return; } // do not announce what was already there on load
@@ -90,7 +103,7 @@ function App() {
       seen.current.add(k);
       const msg = it.kind === 'finished' ? `✓ ${it.project.name}: งานเสร็จแล้ว · deploy ไหม?` : it.kind === 'meeting' ? `◎ ประชุมเสร็จ: ${it.meeting.pending} ไอเดียรออนุมัติ` : `● ${it.task.title}: รอคุณตัดสินใจ`;
       setToast(msg);
-      try { if ('Notification' in window && Notification.permission === 'granted') new Notification('Agent HQ', { body: msg }); } catch { /* ignore */ }
+      try { if ('Notification' in window && Notification.permission === 'granted') new Notification('OSMO AGENT', { body: msg }); } catch { /* ignore */ }
       setRight(true); setTimeout(() => dispatchEvent(new Event('hq:inbox')));
     }
   }, [inboxAll.data]);
@@ -130,7 +143,7 @@ function LeftBar({ org, connected, current, page, theme, setTheme, paused, reloa
 
   const agents: any[] = org?.agents ?? [];
   const groups = org ? [
-    { id: 'exec', name: 'Executive', agents: agents.filter((a) => a.level === 1) },
+    { id: 'exec', name: 'GM', agents: agents.filter((a) => a.level === 1) },
     ...org.departments.map((d: any) => ({ id: d.id, name: d.name, agents: agents.filter((a) => a.department_id === d.id && a.level > 1).sort((a, b) => a.level - b.level) })),
   ] : [];
   const busy = agents.filter((a) => agentState(a) === 'busy').length;
@@ -139,7 +152,7 @@ function LeftBar({ org, connected, current, page, theme, setTheme, paused, reloa
     <aside className="relative flex min-h-0 flex-col border-r border-line bg-panel">
       <div className="flex h-14 shrink-0 items-center gap-3 border-b border-line px-4">
         <span className="text-[17px] text-accent">✦</span>
-        <span className="text-[15px] font-bold tracking-[.12em]">AGENT HQ</span>
+        <span className="text-[15px] font-bold tracking-[.12em]">OSMO AGENT</span>
         {busy > 0 && <span className="text-[11px] text-kin" title="Agents working now">⚙ {busy}</span>}
         <span className={`ml-auto flex items-center gap-1.5 text-[10.5px] tracking-wider ${connected ? 'text-matcha' : 'text-shu'}`}>
           <span className={`size-1.5 rounded-full ${connected ? 'bg-matcha' : 'bg-shu breathe'}`} />{connected ? 'LIVE' : 'OFFLINE'}
@@ -183,15 +196,20 @@ function AgentRow({ a, active }: { a: any; active: boolean }) {
   return (
     <a href={`#/agent/${a.id}`}
       className={`ml-4 block border-l-2 py-2 pl-4 pr-4 transition-colors ${active ? 'border-l-accent bg-raise' : 'border-l-line hover:bg-raise/50'}`}>
-      <div className="flex items-center gap-2">
-        <span className={`truncate text-[12.5px] ${active ? 'text-fg' : ''}`}>{a.name}</span>
-        {a.level === 2 && <span className="text-[10px] text-accent" title="Department leader">★</span>}
-        <span className="ml-auto" />
-        {fixed && <span className="chip text-kin" title="Always runs on this model">{a.model}</span>}
-        <StateDot a={a} />
+      <div className="flex items-center gap-2.5">
+        <Avatar agent={a} size={30} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className={`truncate text-[12.5px] ${active ? 'text-fg' : ''}`}>{a.name}</span>
+            {a.level === 2 && <span className="text-[10px] text-accent" title="Department leader">★</span>}
+            <span className="ml-auto" />
+            {fixed && <span className="chip text-kin" title="Always runs on this model">{a.model}</span>}
+            <StateDot a={a} />
+          </div>
+          <div className="mt-0.5 truncate text-[10.5px] text-faint">∿ {a.title ?? a.role}</div>
+          {a.current_task && <div className="mt-0.5 truncate text-[10.5px] text-kin">→ {a.current_task}</div>}
+        </div>
       </div>
-      <div className="mt-0.5 truncate text-[10.5px] text-faint">∿ {a.name === a.role ? (a.level === 3 ? 'specialist' : a.role) : a.role}</div>
-      {a.current_task && <div className="mt-0.5 truncate text-[10.5px] text-kin">→ {a.current_task}</div>}
     </a>
   );
 }

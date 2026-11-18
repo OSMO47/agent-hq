@@ -5,7 +5,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { type DB, newId, audit, getPolicy, setPolicy } from './db.ts';
 import { createTask, transition, getTask, addDependency, TaskError, type TaskStatus } from './domain/tasks.ts';
 import type { SessionManager } from './runtime/sessionManager.ts';
-import { TaskRunner, buildSpec, projectWorkspace } from './domain/taskRunner.ts';
+import { TaskRunner, buildSpec, projectWorkspace, workExtras } from './domain/taskRunner.ts';
+import { setAgentSkills } from './domain/skills.ts';
+import { avatarVersions, findAvatar, saveAvatar, removeAvatar, MAX_AVATAR_BYTES } from './domain/avatars.ts';
 import { readyTasks } from './domain/tasks.ts';
 import { CeoPlanner, gitDirty } from './domain/ceoPlanner.ts';
 import { deleteProject, projectFootprint } from './domain/projects.ts';
@@ -81,20 +83,79 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   }));
 
   // ---------- Organization ----------
-  app.get('/api/org', h(() => ({
+  app.get('/api/org', h(() => {
+    let avatars: Record<string, number> | undefined;
+    return {
     departments: all('SELECT * FROM departments ORDER BY rowid'),
-    agents: all(`SELECT a.*, s.id session_id, s.status session_status, s.task_id current_task_id, t.title current_task
+    agents: (all(`SELECT a.*, (SELECT json_group_array(skill_id) FROM agent_skills WHERE agent_id = a.id) skills, s.id session_id, s.status session_status, s.task_id current_task_id, t.title current_task
                  FROM agents a
                  LEFT JOIN sessions s ON s.id = (SELECT id FROM sessions WHERE agent_id = a.id AND status IN ('queued','starting','running') ORDER BY queued_at DESC LIMIT 1)
-                 LEFT JOIN tasks t ON t.id = s.task_id ORDER BY a.level, a.rowid`),
-  })));
+                 LEFT JOIN tasks t ON t.id = s.task_id ORDER BY a.level, a.rowid`) as any[])
+      .map((a, _i, list) => ({ ...a, skills: JSON.parse(a.skills), avatar: (avatars ??= avatarVersions(opts.dataDir, list))[a.id] ?? null })),
+    };
+  }));
+  // ---------- Agent pictures (owner-supplied, stored only in <data>/avatars) ----------
+  const agentOr404 = (id: string) => {
+    const a = one('SELECT id, name FROM agents WHERE id = ?', id) as { id: string; name: string } | undefined;
+    if (!a) throw new TaskError('agent not found');
+    return a;
+  };
+  app.get('/api/agents/:id/avatar', (req, res) => {
+    const a = one('SELECT id, name FROM agents WHERE id = ?', req.params.id) as { id: string; name: string } | undefined;
+    const f = a && findAvatar(opts.dataDir, a);
+    if (!f) { res.status(404).end(); return; }
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable'); // URL carries ?v=<mtime>
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.sendFile(f.path);
+  });
+  app.put('/api/agents/:id/avatar', express.raw({ type: () => true, limit: MAX_AVATAR_BYTES + 1 }), h((req) => {
+    const a = agentOr404(req.params.id as string);
+    try { saveAvatar(opts.dataDir, a, req.body as Buffer); } catch (e) { throw new TaskError((e as Error).message); }
+    audit(db, OWNER, 'agent.avatar', a.id, {});
+    broadcast({ type: 'org' });
+    return { ok: true };
+  }));
+  app.delete('/api/agents/:id/avatar', h((req) => {
+    const a = agentOr404(req.params.id as string);
+    removeAvatar(opts.dataDir, a);
+    audit(db, OWNER, 'agent.avatar.remove', a.id, {});
+    broadcast({ type: 'org' });
+    return { ok: true };
+  }));
+  app.get('/api/skills', h(() => (all(`SELECT s.id, s.name, s.description, length(s.instructions) size,
+      (SELECT json_group_array(agent_id) FROM agent_skills WHERE skill_id = s.id) agents FROM skills s ORDER BY s.name`) as any[])
+    .map((r) => ({ ...r, agents: JSON.parse(r.agents) }))));
+  app.get('/api/skills/:id', h((req) => {
+    const s = one('SELECT * FROM skills WHERE id = ?', req.params.id);
+    if (!s) throw new TaskError('skill not found');
+    return s;
+  }));
+  /** Owner sets an agent's skills (replaces the list). */
+  app.put('/api/agents/:id/skills', h((req) => {
+    if (!one('SELECT 1 FROM agents WHERE id = ?', req.params.id)) throw new TaskError('agent not found');
+    const ids = req.body?.skills;
+    if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) throw new TaskError('skills must be a list of ids');
+    try { setAgentSkills(db, req.params.id as string, ids, OWNER); } catch (e) { throw new TaskError((e as Error).message); }
+    broadcast({ type: 'org' });
+    return { skills: ids };
+  }));
   app.patch('/api/agents/:id', h((req) => {
     const a = one('SELECT * FROM agents WHERE id = ?', req.params.id) as any;
     if (!a) throw new TaskError('agent not found');
-    const { model, status, instructions, permissions, modelMode } = req.body ?? {};
+    const { model, status, instructions, permissions, modelMode, name, title, personality } = req.body ?? {};
+    // validate everything before writing anything
     if (status && !['active', 'suspended', 'inactive'].includes(status)) throw new TaskError('bad status');
+    for (const [k, v] of [['name', name], ['title', title]] as const) {
+      if (v != null && (typeof v !== 'string' || !v.trim() || v.trim().length > 40)) throw new TaskError(`${k} must be 1-40 characters`);
+    }
+    if (personality != null && (typeof personality !== 'string' || personality.trim().length > 500)) throw new TaskError('personality must be at most 500 characters');
     if (modelMode && !['difficulty', 'fixed'].includes(modelMode)) throw new TaskError('bad modelMode');
     if (model && !MODEL_ALIASES.has(model)) throw new TaskError('unknown model');
+    if (name != null || title != null) {
+      db.prepare('UPDATE agents SET name = COALESCE(?, name), title = COALESCE(?, title) WHERE id = ?').run(name?.trim() ?? null, title?.trim() ?? null, a.id);
+    }
+    // empty text clears it (no personality line in the prompt); stored as '' so the startup migration does not refill it
+    if (personality != null) db.prepare('UPDATE agents SET personality = ? WHERE id = ?').run(personality.trim(), a.id);
     if (modelMode) db.prepare('UPDATE agents SET model_mode = ? WHERE id = ?').run(modelMode, a.id);
     db.prepare('UPDATE agents SET model = COALESCE(?, model), status = COALESCE(?, status), instructions = COALESCE(?, instructions), permissions = COALESCE(?, permissions) WHERE id = ?')
       .run(model ?? null, status ?? null, instructions ?? null, permissions ? JSON.stringify(permissions) : null, a.id);
@@ -115,7 +176,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     return one('SELECT * FROM projects WHERE id = ?', id);
   }));
   app.get('/api/projects/:id/footprint', h((req) => projectFootprint(db, req.params.id as string)));
-  /** Removes the project from Agent HQ only; the workspace folder on disk is left untouched. */
+  /** Removes the project from OSMO AGENT only; the workspace folder on disk is left untouched. */
   app.delete('/api/projects/:id', h((req) => {
     const out = deleteProject(db, req.params.id as string, OWNER);
     broadcast({ type: 'project' }); broadcast({ type: 'task' });
@@ -225,7 +286,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     if (['queued', 'starting', 'running'].includes(s.status)) throw new TaskError('session is still running');
     const agent = one('SELECT * FROM agents WHERE id = ?', s.agent_id) as any;
     const prev = JSON.parse((one('SELECT spec FROM sessions WHERE id = ?', s.id) as any).spec);
-    const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30), getPolicy(db, 'runtime.permissionMode', 'auto')), resumeSessionId: s.claude_session_id };
+    const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30), getPolicy(db, 'runtime.permissionMode', 'auto'), workExtras(db, agent.id)), resumeSessionId: s.claude_session_id };
     if (!spec.prompt) throw new TaskError('text required');
     return { sessionId: sm.enqueue({ agentId: agent.id, actor: OWNER, spec, purpose: 'message' }) };
   }));

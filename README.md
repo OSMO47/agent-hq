@@ -1,4 +1,4 @@
-# Agent HQ
+# OSMO AGENT
 
 A local dashboard that runs a small **AI organization made of Claude Code sessions**: a CEO, six department leaders and specialists. You describe the work; the CEO plans it, assigns people, and the team runs it on your machine. You are only asked when someone needs a decision, and when the work is finished (to deploy or not).
 

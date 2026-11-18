@@ -27,6 +27,23 @@
   --font-mono: "JetBrains Mono", "Cascadia Code", "Cascadia Mono", ui-monospace, Consolas, monospace;
 }
 
+/*
+ * Chiikawa: soft, round and warm. Cream page, white cards that float, cocoa text, sakura pink accent,
+ * Hachiware blue for info, Usagi yellow for busy. Colours/shape only; no character artwork is used.
+ * Text-coloured tokens are deepened so they stay readable (>= ~4:1) on the cream background.
+ */
+[data-theme="chiikawa"] {
+  --color-ink: #fff6ee; --color-panel: #fffdfa; --color-raise: #ffeef3; --color-line: #f4e2d8; --color-line-strong: #e9cdbf;
+  --color-fg: #5a3f37; --color-dim: #84665b; --color-faint: #a88e83; --color-accent: #d6497a; --color-accent-fg: #ffffff;
+  --color-shu: #d9435b; --color-ai: #2f7fc1; --color-matcha: #2e9459; --color-kin: #b97f00;
+  --font-sans: "M PLUS Rounded 1c", "Mali", ui-rounded, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, Consolas, "Mali", monospace;
+  --radius-md: 10px; --radius-lg: 14px;
+}
+[data-theme="chiikawa"] body { font-size: 13px; }
+[data-theme="chiikawa"] .label { letter-spacing: .06em; }
+[data-theme="chiikawa"] .btn { border-radius: 999px; padding: 0 12px; }
+
 [data-theme="dracula"] {
   --color-ink: #1e1f29; --color-panel: #21222c; --color-raise: #2c2e3b; --color-line: #343746; --color-line-strong: #44475a;
   --color-fg: #f8f8f2; --color-dim: #c3c5d4; --color-faint: #7c80a0; --color-accent: #bd93f9; --color-accent-fg: #191a21;

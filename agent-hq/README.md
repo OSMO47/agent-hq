@@ -1,4 +1,4 @@
-# Agent HQ (app folder)
+# OSMO AGENT (app folder)
 
 How to install and run: see the main [README](../README.md).
 

@@ -7,7 +7,7 @@ const COLUMNS = ['BACKLOG', 'PLANNED', 'ASSIGNED', 'RUNNING', 'REVIEW', 'DONE'];
 const SIDE = ['BLOCKED', 'FAILED', 'CANCELLED'];
 const PRIO = ['P0', 'P1', 'P2', 'P3', 'P4'];
 const DIFFS = [['easy', 'ง่าย'], ['medium', 'กลาง'], ['hard', 'ยาก']] as const;
-const DIFF_OPTIONS: [string, string][] = [['', 'หัวหน้าประเมิน'], ...DIFFS];
+const DIFF_OPTIONS: (readonly [string, string])[] = [['', 'หัวหน้าประเมิน'], ...DIFFS];
 const DIFF_TONE: Record<string, string> = { easy: 'text-matcha border-matcha/30', medium: 'text-ai border-ai/30', hard: 'text-shu border-shu/30' };
 
 /** Model a task will run on: difficulty → policy map; otherwise the assignee's own model. */
@@ -76,7 +76,7 @@ export default function Tasks({ param }: { param?: string }) {
           {projects.data.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <button className="btn" onClick={() => setCreating('project')}>New project</button>
-        <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from Agent HQ">Delete project</button>
+        <button className="btn btn-ghost" disabled={!pid} onClick={() => setCreating('delete')} title="Delete this project from OSMO AGENT">Delete project</button>
         <button className="btn" disabled={!pid} onClick={() => setCreating('publish')} title="Commit / push / deploy this project">⇡ Publish</button>
         <div className="ml-auto flex items-center gap-3 text-[11.5px] text-faint">
           {SIDE.map((s) => <span key={s} className="whitespace-nowrap"><Status s={s} /> {all.filter((t) => t.status === s).length}</span>)}
@@ -160,7 +160,7 @@ function DeleteProject({ id, onDone }: { id: string; onDone: (deleted: boolean) 
         <div className="space-y-4">
           <div className="text-[13px]">{name}</div>
           <div className="rounded-md border border-shu/40 p-3 text-[12px] leading-relaxed">
-            Removes from Agent HQ: <span className="text-shu">{data.tasks} task(s)</span> with their comments and history,
+            Removes from OSMO AGENT: <span className="text-shu">{data.tasks} task(s)</span> with their comments and history,
             and <span className="text-shu">{data.sessions} session(s)</span> with their transcripts. This cannot be undone.
           </div>
           <div className="rounded-md border border-matcha/30 p-3 text-[12px] leading-relaxed text-matcha">

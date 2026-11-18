@@ -9,7 +9,7 @@ export const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
 export interface Task {
   id: string; project_id: string; parent_id: string | null; title: string; description: string;
   status: TaskStatus; priority: number; difficulty: Difficulty | null; deadline: string | null; assignee_id: string | null;
-  department_id: string | null; review_status: string | null; attempts: number; lock_session: string | null;
+  department_id: string | null; review_status: string | null; attempts: number; lock_session: string | null; continuations?: number;
 }
 
 /** Allowed lifecycle transitions. RUNNING is entered only through claimTask(). */
