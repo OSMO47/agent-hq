@@ -1,0 +1,111 @@
+/* Office floor — ใช้คู่กับ OfficeFloor.tsx */
+.of-wrap { --of-accent: var(--color-kin); position: relative; margin: 0 auto; aspect-ratio: 1000 / 560; width: min(100%, calc(50vh * 1.786)); }
+.of-floor {
+  position: absolute; inset: 0; border-radius: 14px; overflow: hidden;
+  background-color: var(--color-panel);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-line) 70%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-line) 70%, transparent) 1px, transparent 1px);
+  background-size: 4% 7.14%;
+  border: 1px solid var(--color-line-strong);
+}
+.of-abs { position: absolute; box-sizing: border-box; }
+
+/* windows along the top wall */
+.of-window { position: absolute; top: 0; height: 5px; background: linear-gradient(90deg, #2c4660, #4b7398, #2c4660); border-radius: 0 0 3px 3px; opacity: .8; }
+
+/* department rows */
+.of-dept { position: absolute; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-faint); white-space: nowrap; font-weight: 600; }
+.of-desk {
+  position: absolute; transform: translate(-50%, -50%); height: 7.5%; border-radius: 6px;
+  background: var(--color-raise); border: 1px solid var(--color-line-strong); box-shadow: 0 4px 0 color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.of-monitor {
+  position: absolute; left: 50%; top: 18%; width: 46%; height: 34%; transform: translateX(-50%);
+  border-radius: 3px; background: color-mix(in srgb, var(--color-fg) 70%, #000); border: 1px solid var(--color-line-strong); transition: background .5s, box-shadow .5s;
+}
+.of-monitor.on { background: color-mix(in srgb, var(--hue) 55%, #0d0f13); box-shadow: 0 0 14px color-mix(in srgb, var(--hue) 60%, transparent); animation: of-flicker 2.4s ease-in-out infinite; }
+.of-monitor.on::after { content: ''; position: absolute; left: 14%; right: 30%; top: 30%; height: 2px; background: rgba(255,255,255,.7); box-shadow: 0 4px 0 rgba(255,255,255,.45), 0 8px 0 rgba(255,255,255,.3); animation: of-code 1.2s steps(4) infinite; transform-origin: left; }
+.of-plate { position: absolute; left: 50%; bottom: -15px; transform: translateX(-50%); font-size: 9px; color: var(--color-faint); white-space: nowrap; max-width: 120%; overflow: hidden; text-overflow: ellipsis; }
+.of-chair { position: absolute; transform: translate(-50%, -80%); width: 26px; height: 24px; border-radius: 8px 8px 50% 50% !important; border-radius: 50%; border: 2px solid var(--color-line-strong); background: var(--color-ink); }
+
+/* rooms */
+.of-room { position: absolute; border: 1.5px solid color-mix(in srgb, var(--color-ai) 35%, transparent); background: color-mix(in srgb, var(--color-ai) 5%, transparent); border-radius: 10px; }
+.of-room-label { position: absolute; top: 8px; left: 12px; font-size: 10px; letter-spacing: .12em; color: var(--color-faint); font-weight: 600; }
+.of-rug { position: absolute; border-radius: 18px; background: repeating-linear-gradient(45deg, rgba(224,181,74,.05) 0 8px, transparent 8px 16px); border: 1px solid rgba(224,181,74,.12); }
+.of-sofa { position: absolute; border-radius: 10px 10px 6px 6px; background: color-mix(in srgb, var(--color-accent) 30%, var(--color-raise)); border: 1px solid var(--color-line-strong); box-shadow: inset 0 6px 0 color-mix(in srgb, var(--color-accent) 42%, var(--color-raise)); }
+.of-thing { position: absolute; transform: translate(-50%, -50%); border-radius: 6px; background: var(--color-raise); border: 1px solid var(--color-line-strong); display: flex; align-items: center; justify-content: center; font-size: 11px; }
+.of-plant { position: absolute; transform: translate(-50%, -50%); width: 26px; height: 26px; border-radius: 50%; background: radial-gradient(circle at 40% 40%, #6fa564, #2f5a2b); box-shadow: 0 0 0 3px #3b2d22; }
+
+/* ---------- people ---------- */
+.of-walker {
+  position: absolute; width: 0; height: 0; padding: 0; border: 0; background: none; cursor: pointer;
+  transition-property: left, top; transition-timing-function: linear;
+}
+.of-person { position: absolute; left: -20px; top: -46px; width: 40px; height: 50px; display: block; transition: transform .15s; }
+.of-sprite { display: block; overflow: visible; }
+.of-sprite * { transform-box: fill-box; }
+.of-leg { transform-origin: 50% 0; }
+.of-arm { transform-origin: 50% 10%; }
+.of-eyes { transform-origin: 50% 50%; animation: of-blink 4.2s infinite; }
+.of-headg { transform-origin: 50% 90%; }
+/* เดิน: ขาแกว่ง แขนแกว่ง ตัวเด้ง */
+.of-walker.walking .of-sprite { animation: of-hop .36s ease-in-out infinite; }
+.of-walker.walking .of-leg.l, .of-walker.walking .of-arm.r { animation: of-swing .36s ease-in-out infinite; }
+.of-walker.walking .of-leg.r, .of-walker.walking .of-arm.l { animation: of-swing .36s ease-in-out infinite reverse; }
+/* นั่งที่โต๊ะ/โซฟา: ซ่อนขา ตัวต่ำลงนิด */
+.of-walker.seated .of-legs { opacity: 0; }
+.of-walker.seated .of-sprite { transform: translateY(5px); }
+/* พิมพ์งาน: แขนรัวๆ หัวพยักนิดๆ */
+.of-walker.work:not(.walking) .of-arm.l { animation: of-type .22s ease-in-out infinite alternate; }
+.of-walker.work:not(.walking) .of-arm.r { animation: of-type .22s .11s ease-in-out infinite alternate; }
+.of-walker.work:not(.walking) .of-headg { animation: of-nod 1.6s ease-in-out infinite; }
+/* ว่าง: โยกตัวเบาๆ · นอน: เอียงหัว · เสร็จ: กระโดดดีใจ · รอคิว: เคาะเท้า */
+.of-walker.idle:not(.walking) .of-bodyg { animation: of-sway 2.6s ease-in-out infinite; transform-origin: 50% 100%; transform-box: view-box; }
+.of-walker.idle-sleep:not(.walking) .of-headg { transform: rotate(-14deg) translateY(1px); }
+.of-walker.done:not(.walking) .of-sprite { animation: of-jump .5s ease-out 3; }
+.of-walker.queued:not(.walking) .of-headg { animation: of-look 2.2s ease-in-out infinite; }
+.of-walker.failed:not(.walking) .of-headg { transform: rotate(8deg) translateY(1.5px); }
+.of-walker:hover .of-sprite { filter: brightness(1.12) drop-shadow(0 0 4px var(--hue)); }
+.of-walker.selected .of-person::before {
+  content: ''; position: absolute; left: 0; top: 40px; width: 40px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--of-accent); animation: of-ring 1.4s ease-out infinite;
+}
+.of-walker:focus-visible { outline: none; }
+.of-walker:focus-visible .of-person { outline: 2px solid var(--of-accent); outline-offset: 3px; border-radius: 10px; }
+
+.of-name {
+  position: absolute; left: 50%; top: 6px; transform: translateX(-50%); white-space: nowrap;
+  font-size: 9.5px; font-weight: 600; color: var(--color-fg); text-shadow: 0 0 3px var(--color-panel), 0 0 2px var(--color-panel); pointer-events: none;
+}
+.of-bubble {
+  position: absolute; left: 50%; bottom: 48px; transform: translateX(-50%); white-space: nowrap; max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+  padding: 3px 8px; border-radius: 999px; font-size: 10px; line-height: 1.4; pointer-events: none;
+  background: #fffdf8; color: #2a2018; border: 1px solid var(--color-line-strong); box-shadow: 0 4px 12px rgb(0 0 0 / .14);
+  animation: of-pop .35s cubic-bezier(.3,1.5,.5,1) both;
+}
+.of-bubble.work { background: var(--color-panel); color: var(--color-fg); border: 1.5px solid var(--hue); }
+.of-bubble.idle { padding: 2px 5px; background: rgba(241,238,230,.92); }
+.of-bubble.queued { background: var(--color-panel); color: var(--color-kin); border: 1px dashed var(--color-kin); }
+.of-bubble.done { background: #2b6b3a; color: #fff; }
+.of-bubble.failed { background: #7a2a1d; color: #fff; }
+.of-zz { position: absolute; left: 12px; top: -52px; font-size: 10px; color: var(--color-faint); pointer-events: none; animation: of-zz 2s ease-in-out infinite; }
+
+@keyframes of-hop { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
+@keyframes of-swing { 0% { transform: rotate(-24deg); } 50% { transform: rotate(24deg); } 100% { transform: rotate(-24deg); } }
+@keyframes of-type { from { transform: translateY(0) rotate(-6deg); } to { transform: translateY(-1.8px) rotate(6deg); } }
+@keyframes of-nod { 0%,100% { transform: rotate(0); } 50% { transform: rotate(3deg) translateY(.6px); } }
+@keyframes of-sway { 0%,100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
+@keyframes of-jump { 0%,100% { transform: translateY(5px); } 40% { transform: translateY(-7px); } }
+@keyframes of-look { 0%,40%,100% { transform: rotate(0); } 55%,70% { transform: rotate(-9deg); } 85% { transform: rotate(9deg); } }
+@keyframes of-blink { 0%,92%,100% { transform: scaleY(1); } 95% { transform: scaleY(.1); } }
+@keyframes of-ring { 0% { transform: scale(.7); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+@keyframes of-pop { 0% { opacity: 0; transform: translateX(-50%) translateY(6px) scale(.6); } 100% { opacity: 1; transform: translateX(-50%) scale(1); } }
+@keyframes of-flicker { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.18); } }
+@keyframes of-code { 0% { transform: scaleX(.3); } 100% { transform: scaleX(1); } }
+@keyframes of-zz { 0% { opacity: 0; transform: translate(0,0); } 50% { opacity: 1; } 100% { opacity: 0; transform: translate(8px,-10px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .of-wrap *, .of-wrap *::before, .of-wrap *::after { animation: none !important; }
+  .of-walker { transition-duration: 0s !important; }
+}
