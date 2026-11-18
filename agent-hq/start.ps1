@@ -1,4 +1,4 @@
-# Agent HQ launcher (Windows). Usage:  powershell -ExecutionPolicy Bypass -File .\start.ps1 [-Dev]
+# OSMO AGENT launcher (Windows). Usage:  powershell -ExecutionPolicy Bypass -File .\start.ps1 [-Dev]
 param([switch]$Dev)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot

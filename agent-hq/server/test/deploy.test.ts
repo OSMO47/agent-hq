@@ -58,7 +58,7 @@ test('publish: commit → push goes to the branch upstream (read from git config
   const st = d.start('p', { commit: true, push: true, deploy: false, actor: 'owner' });
   await wait(st);
   assert.equal(st.ok, true, st.output);
-  assert.match(git(remote, 'log', '-1', '--format=%B', 'main'), /Agent HQ[\s\S]*Change a/, 'commit landed on the remote');
+  assert.match(git(remote, 'log', '-1', '--format=%B', 'main'), /OSMO AGENT[\s\S]*Change a/, 'commit landed on the remote');
   assert.equal(gitTarget(work)!.ahead, 0);
 
   // A new branch without upstream: pushed with -u to origin.

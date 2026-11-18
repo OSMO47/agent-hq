@@ -54,6 +54,12 @@ test('scrubEnv removes foreign secrets but keeps Claude auth', () => {
   assert.deepEqual(Object.keys(e).sort(), ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'PATH']);
 });
 
+test('scrubEnv drops inherited debugger hooks (agents failed with inspector EADDRINUSE)', () => {
+  const e = scrubEnv({ PATH: 'p', BUN_INSPECT: 'ws://127.0.0.1:9238/', BUN_INSPECT_CONNECT_TO: 'x', NODE_OPTIONS: '--inspect=9229' });
+  assert.deepEqual(Object.keys(e), ['PATH']);
+  assert.equal(scrubEnv({ NODE_OPTIONS: '--max-old-space-size=4096' }).NODE_OPTIONS, '--max-old-space-size=4096');
+});
+
 test('concurrency limit queues extra sessions and pumps on completion', async () => {
   const { sm, ad } = setup(2);
   const ids = ['a', 'b', 'c'].map((p) => sm.enqueue({ agentId: 'ceo', spec: spec(p), actor: 'owner' }));
@@ -126,6 +132,19 @@ test('usage limit: session is requeued with --resume and nothing starts until re
   sm.pump();
   assert.equal(ad.runs[1].spec.resumeSessionId, 'conv-1', 'resumes the same Claude conversation');
   assert.equal(ad.runs[1].spec.model, 'haiku', 'model is never downgraded or changed');
+});
+
+test('usage warning (allowed_warning) is not a limit: the queue keeps moving', async () => {
+  const { sm, ad } = setup(1);
+  sm.enqueue({ agentId: 'ceo', spec: spec('first'), actor: 'owner' });
+  const resetsAt = Math.floor(Date.now() / 1000) + 5 * 86400; // weekly window, days away
+  ad.runs[0].emit({ kind: 'rate_limit', info: { status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.57, resetsAt } });
+  ad.runs[0].emit(result(true));
+  ad.runs[0].exit(0);
+  await tick();
+  assert.equal(sm.rateLimitedUntil, 0, 'a warning must not freeze the org until the weekly reset');
+  sm.enqueue({ agentId: 'ceo', spec: spec('next'), actor: 'owner' });
+  assert.equal(ad.runs.length, 2, 'next session starts right away');
 });
 
 test('owner policy: every seeded agent runs on opus', () => {

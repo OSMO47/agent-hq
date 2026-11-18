@@ -4,6 +4,7 @@ import { type DB, newId, audit, getPolicy } from '../db.ts';
 import { claimTask, transition, getTask, readyTasks, TaskError, type Task, type Difficulty, DIFFICULTIES } from './tasks.ts';
 import type { SessionManager, SessionStatus } from '../runtime/sessionManager.ts';
 import type { RunSpec } from '../runtime/types.ts';
+import { skillsPrompt } from './skills.ts';
 
 export interface AgentRow {
   id: string; name: string; role: string; level: number; department_id: string | null; model: string;
@@ -45,16 +46,43 @@ export const PUBLISH_DENY = ['Bash(git push:*)', 'Bash(firebase:*)', 'Bash(npx f
  * permissionMode: the owner policy runtime.permissionMode (default 'auto': Claude Code approves safe actions itself,
  * asks nobody in headless mode). Hard deny rules (PUBLISH_DENY, agent disallowedTools) still always win.
  */
-export function buildSpec(agent: AgentRow, prompt: string, cwd: string, maxTurns: number, permissionMode?: RunSpec['permissionMode']): RunSpec {
+export function buildSpec(agent: AgentRow, prompt: string, cwd: string, maxTurns: number, permissionMode?: RunSpec['permissionMode'], skills = ''): RunSpec {
   const perm = JSON.parse(agent.permissions || '{}');
   return {
     prompt, cwd, model: agent.model, maxTurns,
-    systemPrompt: `You are ${agent.name}, ${agent.role}, in an AI organization run by a human owner.\n${agent.instructions}\n\n${LOCAL_ONLY_RULE}`,
+    // Skills (work sessions only) go before the owner rule so the rule is the last word.
+    systemPrompt: `You are ${agent.name}, ${agent.role}, in an AI organization run by a human owner.\n${agent.instructions}\n\n${skills ? `${skills}\n\n` : ''}${LOCAL_ONLY_RULE}`,
     tools: perm.tools, allowedTools: perm.allowedTools,
     disallowedTools: [...new Set([...(perm.disallowedTools ?? []), ...PUBLISH_DENY])],
     permissionMode: permissionMode ?? perm.permissionMode ?? 'default',
   };
 }
+
+/**
+ * How to spend turns well. Each turn re-sends the whole context (~60k+ tokens), so turns, not output, drive cost.
+ * Measured on real runs: sessions burned their turn budget on one-at-a-time shell reads and on managing dev servers.
+ */
+export const WORK_RULES = ['# Working efficiently (every turn re-sends your whole context, so fewer turns = cheaper and faster)',
+  '- Make a short plan first, then act. Put independent tool calls in ONE message (read/search several files at once).',
+  '- Use Grep / Glob / Read (with offset+limit for big files) instead of cat, sed, head or grep in Bash. Never re-read a file you just wrote or edited.',
+  '- Do not start, stop or kill dev servers, browsers or ports, and do not install tools, unless the task explicitly needs it. Verify with existing tests or scripts.',
+  '- Edit precisely; do not rewrite whole files to change a few lines.',
+  '- Stop as soon as the done-condition is met and report briefly.'].join('\n');
+
+/** System-prompt extras for real work: efficiency rules + the agent's skills. */
+/**
+ * The agent's character, for tone only. Used where the agent talks in free text (work reports, follow-ups, meetings),
+ * never where the reply must be machine-readable JSON (dispatch, assessment, planning, meeting summary).
+ */
+export function personalityPrompt(db: DB, agentId: string): string {
+  const a = db.prepare('SELECT name, personality FROM agents WHERE id = ?').get(agentId) as { name: string; personality: string | null } | undefined;
+  if (!a?.personality?.trim()) return '';
+  return ['# Your personality (tone only)', a.personality.trim(),
+    `Let this show in how ${a.name} talks: word choice, warmth, short asides. It never changes the substance: facts, code, `
+    + 'file names, numbers and required formats (reports, NEEDS_OWNER / ESCALATE lines) stay exact and clear. Keep it light; the work comes first.'].join('\n');
+}
+
+export const workExtras = (db: DB, agentId: string) => [personalityPrompt(db, agentId), WORK_RULES, skillsPrompt(db, agentId)].filter(Boolean).join('\n\n');
 
 /** Autopilot accepts finished work automatically; agents flag what really needs the owner. */
 export const OWNER_HINT = 'Your work is accepted automatically unless you flag it. If you have a proposal or opinion beyond the task, need the owner to decide something, or the result should be checked by the owner before it counts as done, make the LAST line of your reply exactly:\nNEEDS_OWNER: <what the owner should decide or approve>\nThe owner reads Thai: write the NEEDS_OWNER line in Thai.';
@@ -80,6 +108,9 @@ export function parseDispatch(text: string): { assignee: string; reason: string 
   try { const o = JSON.parse(m[0]); return { assignee: String(o.assignee), reason: String(o.reason ?? '') }; }
   catch { return { assignee: m[1], reason: '' }; }
 }
+
+const CONTINUE_NOTE = 'You ran out of turns. Do not re-explore what you already know. Finish the remaining work in as few turns as possible '
+  + '(batch tool calls). If it cannot be finished in this session, stop and report what is done and the exact remaining steps.';
 
 const ESCALATE_HINT = 'If this task turns out to be clearly harder than expected for you, stop early and make the LAST line of your reply exactly:\nESCALATE: <one-sentence reason>\nThe task will continue on a stronger model with this conversation.';
 
@@ -196,6 +227,7 @@ export class TaskRunner {
     const assignee = this.agent(t.assignee_id);
     if (assignee.status !== 'active') throw new TaskError(`agent ${assignee.id} is ${assignee.status}`);
     claimTask(this.db, taskId, newId('lock'), actor); // throws on unmet deps / duplicate run
+    this.db.prepare('UPDATE tasks SET continuations = 0 WHERE id = ?').run(taskId); // fresh run, fresh budget
     try {
       const sid = !t.difficulty && assignee.model_mode !== 'fixed' ? this.startAssessment(t, assignee, actor) : this.startWork(t.id, actor);
       return sid;
@@ -228,7 +260,8 @@ export class TaskRunner {
     const canEscalate = assignee.model_mode !== 'fixed' && !!nextDifficulty(t.difficulty) && getPolicy(this.db, 'models.autoEscalate', true);
     const cwd = projectWorkspace(this.db, this.dataDir, t.project_id);
     const maxTurns = getPolicy(this.db, 'runtime.maxTurnsPerSession', 30);
-    const base = buildSpec(assignee, taskPrompt(this.db, taskId, canEscalate), cwd, maxTurns, getPolicy(this.db, 'runtime.permissionMode', 'auto'));
+    const base = buildSpec(assignee, taskPrompt(this.db, taskId, canEscalate), cwd, maxTurns, getPolicy(this.db, 'runtime.permissionMode', 'auto'),
+      workExtras(this.db, assignee.id));
     const spec: RunSpec = resume
       ? { ...base, model, resumeSessionId: resume.claudeSessionId, prompt: `${resume.note}\n\nContinue the task from where you stopped and finish it.${canEscalate ? `\n\n${ESCALATE_HINT}` : ''}` }
       : { ...base, model };
@@ -268,6 +301,17 @@ export class TaskRunner {
       this.comment(t.id, 'system', `Escalated ${t.difficulty} → ${up} (${from} → ${to}): ${reason}`);
       audit(this.db, 'system', 'task.escalate', t.id, { from: t.difficulty, to: up, reason });
       this.startWork(t.id, 'system', { claudeSessionId: s.claude_session_id, note: `You are now running on a stronger model (${to}) because: ${reason}.` });
+      return;
+    }
+
+    // Out of turns with nowhere to escalate: continue the same conversation instead of failing.
+    // A fresh re-run would re-read the whole project from scratch (measured: ~$1.5 per lost session).
+    const limit = getPolicy(this.db, 'runtime.maxContinuations', 1);
+    if (status !== 'completed' && this.resultSubtype(sessionId) === 'error_max_turns' && s.claude_session_id && (t.continuations ?? 0) < limit) {
+      this.db.prepare('UPDATE tasks SET continuations = continuations + 1 WHERE id = ?').run(t.id);
+      this.comment(t.id, 'system', `Hit the turn limit; continuing the same conversation (${(t.continuations ?? 0) + 1}/${limit}).`);
+      audit(this.db, 'system', 'task.continue', t.id, { session: sessionId });
+      this.startWork(t.id, 'system', { claudeSessionId: s.claude_session_id, note: CONTINUE_NOTE });
       return;
     }
 

@@ -5,15 +5,18 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { type DB, newId, audit, getPolicy, setPolicy } from './db.ts';
 import { createTask, transition, getTask, addDependency, TaskError, type TaskStatus } from './domain/tasks.ts';
 import type { SessionManager } from './runtime/sessionManager.ts';
-import { TaskRunner, buildSpec, projectWorkspace } from './domain/taskRunner.ts';
+import { TaskRunner, buildSpec, projectWorkspace, workExtras } from './domain/taskRunner.ts';
+import { setAgentSkills } from './domain/skills.ts';
+import { avatarVersions, findAvatar, saveAvatar, removeAvatar, MAX_AVATAR_BYTES } from './domain/avatars.ts';
 import { readyTasks } from './domain/tasks.ts';
 import { CeoPlanner, gitDirty } from './domain/ceoPlanner.ts';
 import { deleteProject, projectFootprint } from './domain/projects.ts';
 import { Deployer, finishedProjects, gitTarget, suggestDeployCommand } from './domain/deploy.ts';
+import { MeetingRoom } from './domain/meetings.ts';
 
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
-  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot', 'runtime.permissionMode']);
+  'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot', 'runtime.permissionMode', 'models.meeting']);
 const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
 
 /** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
@@ -42,6 +45,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   /** Let the organization move on by itself after any change (no-op when autopilot is off or the org is paused). */
   const pilot = () => setImmediate(() => { runner.autoPilot(); broadcast({ type: 'task' }); });
   const deployer = new Deployer(db);
+  const meetings = new MeetingRoom(db, sm, opts.dataDir);
   const app = express();
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
   app.use((req, res, next) => {
@@ -79,20 +83,79 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   }));
 
   // ---------- Organization ----------
-  app.get('/api/org', h(() => ({
+  app.get('/api/org', h(() => {
+    let avatars: Record<string, number> | undefined;
+    return {
     departments: all('SELECT * FROM departments ORDER BY rowid'),
-    agents: all(`SELECT a.*, s.id session_id, s.status session_status, s.task_id current_task_id, t.title current_task
+    agents: (all(`SELECT a.*, (SELECT json_group_array(skill_id) FROM agent_skills WHERE agent_id = a.id) skills, s.id session_id, s.status session_status, s.task_id current_task_id, t.title current_task
                  FROM agents a
                  LEFT JOIN sessions s ON s.id = (SELECT id FROM sessions WHERE agent_id = a.id AND status IN ('queued','starting','running') ORDER BY queued_at DESC LIMIT 1)
-                 LEFT JOIN tasks t ON t.id = s.task_id ORDER BY a.level, a.rowid`),
-  })));
+                 LEFT JOIN tasks t ON t.id = s.task_id ORDER BY a.level, a.rowid`) as any[])
+      .map((a, _i, list) => ({ ...a, skills: JSON.parse(a.skills), avatar: (avatars ??= avatarVersions(opts.dataDir, list))[a.id] ?? null })),
+    };
+  }));
+  // ---------- Agent pictures (owner-supplied, stored only in <data>/avatars) ----------
+  const agentOr404 = (id: string) => {
+    const a = one('SELECT id, name FROM agents WHERE id = ?', id) as { id: string; name: string } | undefined;
+    if (!a) throw new TaskError('agent not found');
+    return a;
+  };
+  app.get('/api/agents/:id/avatar', (req, res) => {
+    const a = one('SELECT id, name FROM agents WHERE id = ?', req.params.id) as { id: string; name: string } | undefined;
+    const f = a && findAvatar(opts.dataDir, a);
+    if (!f) { res.status(404).end(); return; }
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable'); // URL carries ?v=<mtime>
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.sendFile(f.path);
+  });
+  app.put('/api/agents/:id/avatar', express.raw({ type: () => true, limit: MAX_AVATAR_BYTES + 1 }), h((req) => {
+    const a = agentOr404(req.params.id as string);
+    try { saveAvatar(opts.dataDir, a, req.body as Buffer); } catch (e) { throw new TaskError((e as Error).message); }
+    audit(db, OWNER, 'agent.avatar', a.id, {});
+    broadcast({ type: 'org' });
+    return { ok: true };
+  }));
+  app.delete('/api/agents/:id/avatar', h((req) => {
+    const a = agentOr404(req.params.id as string);
+    removeAvatar(opts.dataDir, a);
+    audit(db, OWNER, 'agent.avatar.remove', a.id, {});
+    broadcast({ type: 'org' });
+    return { ok: true };
+  }));
+  app.get('/api/skills', h(() => (all(`SELECT s.id, s.name, s.description, length(s.instructions) size,
+      (SELECT json_group_array(agent_id) FROM agent_skills WHERE skill_id = s.id) agents FROM skills s ORDER BY s.name`) as any[])
+    .map((r) => ({ ...r, agents: JSON.parse(r.agents) }))));
+  app.get('/api/skills/:id', h((req) => {
+    const s = one('SELECT * FROM skills WHERE id = ?', req.params.id);
+    if (!s) throw new TaskError('skill not found');
+    return s;
+  }));
+  /** Owner sets an agent's skills (replaces the list). */
+  app.put('/api/agents/:id/skills', h((req) => {
+    if (!one('SELECT 1 FROM agents WHERE id = ?', req.params.id)) throw new TaskError('agent not found');
+    const ids = req.body?.skills;
+    if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) throw new TaskError('skills must be a list of ids');
+    try { setAgentSkills(db, req.params.id as string, ids, OWNER); } catch (e) { throw new TaskError((e as Error).message); }
+    broadcast({ type: 'org' });
+    return { skills: ids };
+  }));
   app.patch('/api/agents/:id', h((req) => {
     const a = one('SELECT * FROM agents WHERE id = ?', req.params.id) as any;
     if (!a) throw new TaskError('agent not found');
-    const { model, status, instructions, permissions, modelMode } = req.body ?? {};
+    const { model, status, instructions, permissions, modelMode, name, title, personality } = req.body ?? {};
+    // validate everything before writing anything
     if (status && !['active', 'suspended', 'inactive'].includes(status)) throw new TaskError('bad status');
+    for (const [k, v] of [['name', name], ['title', title]] as const) {
+      if (v != null && (typeof v !== 'string' || !v.trim() || v.trim().length > 40)) throw new TaskError(`${k} must be 1-40 characters`);
+    }
+    if (personality != null && (typeof personality !== 'string' || personality.trim().length > 500)) throw new TaskError('personality must be at most 500 characters');
     if (modelMode && !['difficulty', 'fixed'].includes(modelMode)) throw new TaskError('bad modelMode');
     if (model && !MODEL_ALIASES.has(model)) throw new TaskError('unknown model');
+    if (name != null || title != null) {
+      db.prepare('UPDATE agents SET name = COALESCE(?, name), title = COALESCE(?, title) WHERE id = ?').run(name?.trim() ?? null, title?.trim() ?? null, a.id);
+    }
+    // empty text clears it (no personality line in the prompt); stored as '' so the startup migration does not refill it
+    if (personality != null) db.prepare('UPDATE agents SET personality = ? WHERE id = ?').run(personality.trim(), a.id);
     if (modelMode) db.prepare('UPDATE agents SET model_mode = ? WHERE id = ?').run(modelMode, a.id);
     db.prepare('UPDATE agents SET model = COALESCE(?, model), status = COALESCE(?, status), instructions = COALESCE(?, instructions), permissions = COALESCE(?, permissions) WHERE id = ?')
       .run(model ?? null, status ?? null, instructions ?? null, permissions ? JSON.stringify(permissions) : null, a.id);
@@ -113,7 +176,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     return one('SELECT * FROM projects WHERE id = ?', id);
   }));
   app.get('/api/projects/:id/footprint', h((req) => projectFootprint(db, req.params.id as string)));
-  /** Removes the project from Agent HQ only; the workspace folder on disk is left untouched. */
+  /** Removes the project from OSMO AGENT only; the workspace folder on disk is left untouched. */
   app.delete('/api/projects/:id', h((req) => {
     const out = deleteProject(db, req.params.id as string, OWNER);
     broadcast({ type: 'project' }); broadcast({ type: 'task' });
@@ -223,7 +286,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     if (['queued', 'starting', 'running'].includes(s.status)) throw new TaskError('session is still running');
     const agent = one('SELECT * FROM agents WHERE id = ?', s.agent_id) as any;
     const prev = JSON.parse((one('SELECT spec FROM sessions WHERE id = ?', s.id) as any).spec);
-    const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30), getPolicy(db, 'runtime.permissionMode', 'auto')), resumeSessionId: s.claude_session_id };
+    const spec = { ...buildSpec(agent, String(req.body?.text ?? ''), prev.cwd, getPolicy(db, 'runtime.maxTurnsPerSession', 30), getPolicy(db, 'runtime.permissionMode', 'auto'), workExtras(db, agent.id)), resumeSessionId: s.claude_session_id };
     if (!spec.prompt) throw new TaskError('text required');
     return { sessionId: sm.enqueue({ agentId: agent.id, actor: OWNER, spec, purpose: 'message' }) };
   }));
@@ -246,7 +309,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     const v = req.body?.value;
     if (key === 'models.byDifficulty' && !(v && ['easy', 'medium', 'hard'].every((d) => MODEL_ALIASES.has(v[d])))) throw new TaskError('need a model (opus|sonnet|haiku) for easy, medium and hard');
     if (key === 'runtime.permissionMode' && !['auto', 'default', 'acceptEdits'].includes(v)) throw new TaskError('permissionMode must be auto, default or acceptEdits');
-    if ((key === 'runtime.defaultModel' || key === 'models.assessment') && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
+    if ((key === 'runtime.defaultModel' || key === 'models.assessment' || key === 'models.meeting') && !MODEL_ALIASES.has(v)) throw new TaskError('unknown model');
     if (key === 'models.autoEscalate' && typeof v !== 'boolean') throw new TaskError('must be true or false');
     if (/maxConcurrentSessions|maxTurnsPerSession|maxAgents|sessionTimeoutMs/.test(key) && !(Number.isInteger(v) && v > 0)) throw new TaskError('must be a positive integer');
     setPolicy(db, key, req.body?.value, OWNER);
@@ -265,6 +328,10 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
         AND (? = 0 OR ((SELECT COUNT(*) FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch') >= 2
              AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch' AND s.status IN ('queued','starting','running'))))`,
         getPolicy(db, 'org.autoPilot', true) ? 1 : 0) as any[]) items.push({ kind: 'unassigned', task: t });
+    // Meetings that produced ideas the owner has not decided on yet.
+    for (const m of all("SELECT m.*, (SELECT COUNT(*) FROM meeting_ideas i WHERE i.meeting_id = m.id AND i.status = 'pending') pending FROM meetings m WHERE m.status = 'done' ORDER BY m.ended_at DESC") as any[]) {
+      if (m.pending > 0) items.push({ kind: 'meeting', task: { id: m.id, title: m.topic, updated_at: m.ended_at }, meeting: m });
+    }
     // Finished work: tell the owner and ask whether to deploy (agents never deploy).
     const finished = finishedProjects(db);
     // Keep showing a project whose deploy is running or whose result is not dismissed yet.
@@ -280,6 +347,30 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     return items;
   }
   app.get('/api/inbox', h(() => inbox()));
+
+  // ---------- Idea meetings ----------
+  app.get('/api/meetings', h(() => all(`SELECT m.*, p.name project_name,
+      (SELECT COUNT(*) FROM meeting_messages x WHERE x.meeting_id = m.id) said,
+      (SELECT COUNT(*) FROM meeting_ideas i WHERE i.meeting_id = m.id AND i.status = 'pending') pending
+      FROM meetings m JOIN projects p ON p.id = m.project_id ORDER BY m.created_at DESC LIMIT 100`)));
+  app.get('/api/meetings/:id', h((req) => {
+    const m = one('SELECT m.*, p.name project_name FROM meetings m JOIN projects p ON p.id = m.project_id WHERE m.id = ?', req.params.id) as any;
+    if (!m) throw new TaskError('meeting not found');
+    const cur = m.current_session ? one('SELECT s.id, s.status, s.agent_id, a.name, a.role FROM sessions s JOIN agents a ON a.id = s.agent_id WHERE s.id = ?', m.current_session) : null;
+    return { meeting: m, current: cur,
+      messages: all('SELECT x.*, a.name, a.role FROM meeting_messages x JOIN agents a ON a.id = x.agent_id WHERE x.meeting_id = ? ORDER BY x.id', m.id),
+      ideas: all('SELECT * FROM meeting_ideas WHERE meeting_id = ? ORDER BY rowid', m.id) };
+  }));
+  app.post('/api/meetings', h((req) => meetings.start({ projectId: String(req.body?.projectId ?? ''), topic: String(req.body?.topic ?? ''),
+    participants: Array.isArray(req.body?.participants) ? req.body.participants : [], rounds: req.body?.rounds, actor: OWNER })));
+  app.post('/api/meetings/:id/stop', h((req) => { meetings.stop(req.params.id as string, OWNER); return { ok: true }; }));
+  app.post('/api/ideas/:id/:decision', h((req) => {
+    const d = req.params.decision;
+    if (d !== 'approve' && d !== 'reject') throw new TaskError('approve or reject');
+    meetings.decide(req.params.id as string, d === 'approve', OWNER);
+    if (d === 'approve') pilot();
+    return { ok: true };
+  }));
   /** Owner-only publish: runs the project's deploy command (optionally committing first). */
   app.post('/api/projects/:id/deploy', h((req) => deployer.start(req.params.id as string, { command: String(req.body?.command ?? ''), commit: !!req.body?.commit, push: !!req.body?.push, deploy: req.body?.deploy !== false && !!req.body?.command, actor: OWNER })));
   /** Same data as the Inbox "finished" card, available anytime (manual publish from the Task board). */
@@ -317,6 +408,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   sm.on('event', (sessionId: string, event: unknown) => broadcast({ type: 'session.event', sessionId, event }));
   sm.on('status', (sessionId: string, status: string) => broadcast({ type: 'session.status', sessionId, status }));
   sm.on('rateLimit', () => broadcast({ type: 'usage' }));
+  meetings.on('change', (meetingId: string) => broadcast({ type: 'meeting', meetingId }));
   let deployTick: NodeJS.Timeout | null = null; // output can be chatty: coalesce pushes
   deployer.on('change', (projectId: string) => { if (!deployTick) deployTick = setTimeout(() => { deployTick = null; broadcast({ type: 'deploy', projectId }); }, 400); });
   sm.on('limited', (until: number) => broadcast({ type: 'limited', until }));

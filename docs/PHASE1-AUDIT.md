@@ -149,3 +149,9 @@ Verified: `npm test` 29/29 · `vite build` OK · headless Edge screenshots of ag
 - Finished work is **auto-approved** (REVIEW → DONE) unless the agent ends with `NEEDS_OWNER: …` or hit a non-publish blocked tool. Those land in the **Inbox** (right bar, default tab; header "N need you") with Approve / Send back. Failed tasks (Retry/Cancel) and tasks the CEO could not assign also appear there.
 - Agents are local-only: deploy / firebase / git push / gh are hard-denied; a blocked deploy is expected and does not ping the owner.
 - Tests: 35/35 (autopilot flow, NEEDS_OWNER, denial handling, pause/off).
+
+### 2026-11-17 — Idea meeting room (ห้องประชุมเสนอไอเดีย)
+- Owner sets a topic + project, invites 2-6 members, 1-3 rounds. Members speak one at a time (read-only Read/Glob/Grep in the project, Thai output), each sees the transcript so far; round 1 proposes, later rounds build on / challenge. Model: `models.meeting` (sonnet), design agents stay fixed on opus.
+- The CEO chairs a final no-tools summary → JSON → idea cards (title, description, why, suggested assignee). Approve → task in the project (autopilot assigns/runs); reject → archived. Finished meetings with pending ideas appear in the Inbox + notification.
+- Stop anytime; a failed turn ends the meeting; restart marks in-flight meetings stopped. Deleting a project removes its meetings.
+- Tests: 44/44 (turn order, read-only, fixed-opus speaker, transcript visibility, summary parsing, approve → task, stop/failure).

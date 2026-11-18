@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS agents (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
   role          TEXT NOT NULL,
+  title         TEXT,                     -- position shown to people (e.g. "General Manager"); role is what the agent does
+  personality   TEXT,                     -- speaking style / character; tone only, never overrides the work
   level         INTEGER NOT NULL CHECK (level BETWEEN 1 AND 3), -- 1 CEO, 2 leader, 3 specialist
   department_id TEXT REFERENCES departments(id),
   reports_to    TEXT REFERENCES agents(id),
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   department_id TEXT REFERENCES departments(id),
   review_status TEXT CHECK (review_status IN ('pending','approved','changes_requested')),
   attempts      INTEGER NOT NULL DEFAULT 0,
+  continuations INTEGER NOT NULL DEFAULT 0, -- turn-limit continuations used in the current run
   lock_session  TEXT,                     -- non-null while a session owns it (prevents duplicate execution)
   created_by    TEXT NOT NULL DEFAULT 'owner',
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -217,4 +220,38 @@ CREATE TABLE IF NOT EXISTS audit_log (
   target     TEXT,
   details    TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Idea meetings: owner topic -> participants speak in rounds (read-only) -> CEO summary -> idea cards the owner approves into tasks.
+CREATE TABLE IF NOT EXISTS meetings (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id),
+  topic           TEXT NOT NULL,
+  participants    TEXT NOT NULL,            -- JSON array of agent ids, speaking order
+  rounds          INTEGER NOT NULL DEFAULT 2,
+  status          TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','summarizing','done','stopped','failed')),
+  current_session TEXT,
+  summary         TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at        TEXT
+);
+CREATE TABLE IF NOT EXISTS meeting_messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  agent_id   TEXT NOT NULL,
+  round      INTEGER NOT NULL,
+  body       TEXT NOT NULL,
+  session_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS meeting_ideas (
+  id          TEXT PRIMARY KEY,
+  meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  title       TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  why         TEXT NOT NULL DEFAULT '',
+  assignee_id TEXT,
+  status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  task_id     TEXT REFERENCES tasks(id),
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -194,6 +194,34 @@ test('ESCALATE line → difficulty +1, same conversation resumes on the stronger
   assert.equal(d.task.status, 'REVIEW');
 });
 
+test('out of turns with nowhere to escalate: continue the same conversation once, then fail', async () => {
+  const p = (await api('POST', '/api/projects', { name: 'C' })).body;
+  const t = (await api('POST', '/api/tasks', { projectId: p.id, title: 'Big redesign', assigneeId: 'ui-ux-designer' })).body;
+  await api('POST', `/api/tasks/${t.id}/run`);
+  const outOfTurns = (r: any) => {
+    r.emit({ kind: 'init', claudeSessionId: 'conv-C', model: r.spec.model, tools: [] });
+    r.emit({ kind: 'result', ok: false, subtype: 'error_max_turns', text: '', claudeSessionId: 'conv-C', numTurns: 31, costUsdEstimate: 0, inputTokens: 1, outputTokens: 1, permissionDenials: [] });
+    r.exit(1);
+  };
+  const first = ad.runs.at(-1)!;
+  assert.match(first.spec.systemPrompt!, /Working efficiently/);
+  outOfTurns(first);
+  await settle();
+  const second = ad.runs.at(-1)!;
+  assert.notEqual(second, first);
+  assert.equal(second.spec.resumeSessionId, 'conv-C');
+  assert.match(second.spec.prompt, /ran out of turns/);
+  let d = (await api('GET', `/api/tasks/${t.id}`)).body;
+  assert.equal(d.task.status, 'RUNNING');
+  assert.match(d.comments.at(-1).body, /continuing the same conversation \(1\/1\)/);
+
+  outOfTurns(second);
+  await settle();
+  d = (await api('GET', `/api/tasks/${t.id}`)).body;
+  assert.equal(d.task.status, 'FAILED', 'budget used up');
+  assert.equal(ad.runs.at(-1), second);
+});
+
 test('auto-escalation can be turned off by the owner', async () => {
   assert.equal((await api('PUT', '/api/policies/models.autoEscalate', { value: false })).status, 200);
   const p = (await api('POST', '/api/projects', { name: 'E2' })).body;
