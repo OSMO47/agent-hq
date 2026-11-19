@@ -165,7 +165,7 @@ function MeetingItem({ it }: { it: any }) {
         <span className="ml-auto text-faint">{ago(it.task.updated_at)}</span>
       </div>
       <div className="mt-1 line-clamp-2 text-[12.5px] leading-snug">{it.meeting.topic}</div>
-      <div className="mt-2 text-[11.5px] text-accent">{it.meeting.pending} ไอเดียรออนุมัติ → เปิดห้องประชุม</div>
+      <div className="mt-2 text-[11.5px] text-accent">{it.meeting.plan ? 'CEO เลือกผู้เข้าประชุมแล้ว → ตรวจรายชื่อและอนุมัติ' : `${it.meeting.pending} ไอเดียรออนุมัติ → เปิดห้องประชุม`}</div>
     </a>
   );
 }

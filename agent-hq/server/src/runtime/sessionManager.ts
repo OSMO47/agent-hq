@@ -84,13 +84,17 @@ export class SessionManager extends EventEmitter {
     return id;
   }
 
-  /** Start queued sessions while below the concurrency limit and the org is not paused. */
+  /**
+   * Start queued sessions while below the concurrency limit. Pause = "stop working so we can meet":
+   * while the org is paused only meeting sessions (read-only) start; normal work waits for resume.
+   */
   pump() {
-    if (getPolicy(this.db, 'org.paused', false)) return;
+    const paused = !!getPolicy(this.db, 'org.paused', false);
     if (this.rateLimitedUntil > Date.now()) { this.scheduleResume(); return; }
     const max = getPolicy(this.db, 'runtime.maxConcurrentSessions', 2);
+    const only = paused ? "AND purpose = 'meeting'" : '';
     while (this.live.size < max) {
-      const next = this.db.prepare("SELECT id, spec FROM sessions WHERE status = 'queued' ORDER BY queued_at, rowid LIMIT 1").get() as { id: string; spec: string } | undefined;
+      const next = this.db.prepare(`SELECT id, spec FROM sessions WHERE status = 'queued' ${only} ORDER BY queued_at, rowid LIMIT 1`).get() as { id: string; spec: string } | undefined;
       if (!next) return;
       this.launch(next.id, JSON.parse(next.spec) as RunSpec);
     }
@@ -170,6 +174,14 @@ export class SessionManager extends EventEmitter {
     this.db.prepare("UPDATE sessions SET status = 'queued', spec = ?, result_text = NULL, pid = NULL, started_at = NULL, error = ? WHERE id = ?")
       .run(JSON.stringify(next), `usage limit - resumes after ${new Date(this.rateLimitedUntil).toISOString()}`, id);
     this.emit('status', id, 'queued');
+  }
+
+  /** Owner says the usage limit is over: forget the wait and start queued sessions now. */
+  clearLimit(actor: string) {
+    this.rateLimitedUntil = 0;
+    if (this.resumeTimer) { clearTimeout(this.resumeTimer); this.resumeTimer = null; }
+    audit(this.db, actor, 'runtime.limitCleared', null);
+    this.pump();
   }
 
   private scheduleResume() {

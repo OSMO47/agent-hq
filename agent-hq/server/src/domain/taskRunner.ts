@@ -173,7 +173,7 @@ export class TaskRunner {
     if (this.piloting || !getPolicy(this.db, 'org.autoPilot', true) || getPolicy(this.db, 'org.paused', false)) return;
     this.piloting = true;
     try {
-      const unassigned = this.db.prepare(`SELECT t.* FROM tasks t WHERE t.assignee_id IS NULL AND t.status IN ('BACKLOG','PLANNED')
+      const unassigned = this.db.prepare(`SELECT t.* FROM tasks t WHERE t.assignee_id IS NULL AND t.status IN ('BACKLOG','PLANNED') AND t.project_id NOT IN (SELECT id FROM projects WHERE status = 'paused')
           AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch' AND s.status IN ('queued','starting','running'))
           AND (SELECT COUNT(*) FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch') < 2`).all() as unknown as Task[];
       for (const t of unassigned) this.startDispatch(t);

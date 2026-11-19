@@ -14,10 +14,11 @@ import { deleteProject, projectFootprint } from './domain/projects.ts';
 import { Deployer, finishedProjects, gitTarget, suggestDeployCommand } from './domain/deploy.ts';
 import { MeetingRoom } from './domain/meetings.ts';
 
+import { isKnownModel } from './runtime/models.ts';
 const OWNER = 'owner';
 const EDITABLE_POLICIES = new Set(['runtime.maxConcurrentSessions', 'runtime.sessionTimeoutMs', 'runtime.maxTurnsPerSession',
   'runtime.defaultModel', 'models.byDifficulty', 'models.assessment', 'models.autoEscalate', 'recruitment.requiresOwnerApproval', 'recruitment.maxAgents', 'org.autoPilot', 'runtime.permissionMode', 'models.meeting']);
-const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
+const MODEL_ALIASES = { has: (m: unknown) => isKnownModel(m) };
 
 /** Real CPU utilisation from os.cpus() deltas (os.loadavg() is always 0 on Windows). */
 let lastCpu = os.cpus().map((c) => c.times);
@@ -175,6 +176,19 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
     audit(db, OWNER, 'project.create', id, { name });
     return one('SELECT * FROM projects WHERE id = ?', id);
   }));
+  /** Pause / resume one project: its tasks stop being started, live sessions are stopped (tasks go back to ASSIGNED and resume later). */
+  app.post('/api/projects/:id/pause', h((req) => {
+    const pid = req.params.id as string;
+    if (!one('SELECT 1 FROM projects WHERE id = ?', pid)) throw new TaskError('project not found');
+    const paused = req.body?.paused !== false;
+    db.prepare('UPDATE projects SET status = ? WHERE id = ?').run(paused ? 'paused' : 'active', pid);
+    audit(db, OWNER, paused ? 'project.pause' : 'project.resume', pid);
+    let stopped = 0;
+    if (paused) for (const r of all("SELECT id FROM sessions WHERE status IN ('queued','starting','running') AND (project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?))", pid, pid) as any[]) { sm.stop(r.id, OWNER); stopped++; }
+    else pilot();
+    broadcast({ type: 'task' });
+    return { status: paused ? 'paused' : 'active', stopped };
+  }));
   app.get('/api/projects/:id/footprint', h((req) => projectFootprint(db, req.params.id as string)));
   /** Removes the project from OSMO AGENT only; the workspace folder on disk is left untouched. */
   app.delete('/api/projects/:id', h((req) => {
@@ -295,6 +309,7 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   /** Fresh Claude usage on demand (one tiny haiku turn). */
   app.post('/api/owner/check-usage', h(async () => ({ info: await sm.probeUsage(opts.dataDir) })));
   app.post('/api/owner/stop-all', h(() => ({ stopped: sm.stopAll(OWNER) })));
+  app.post('/api/owner/clear-limit', h(() => { sm.clearLimit(OWNER); return { ok: true }; }));
   app.post('/api/owner/pause', h((req) => {
     const paused = !!req.body?.paused;
     setPolicy(db, 'org.paused', paused, OWNER);
@@ -328,6 +343,10 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
         AND (? = 0 OR ((SELECT COUNT(*) FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch') >= 2
              AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.purpose = 'dispatch' AND s.status IN ('queued','starting','running'))))`,
         getPolicy(db, 'org.autoPilot', true) ? 1 : 0) as any[]) items.push({ kind: 'unassigned', task: t });
+    // Meetings whose attendee list the CEO proposed and the owner has not confirmed yet.
+    for (const l of all("SELECT * FROM meeting_plans WHERE status = 'proposed' ORDER BY created_at DESC") as any[]) {
+      items.push({ kind: 'meeting', task: { id: l.id, title: l.topic, updated_at: l.created_at }, meeting: { id: l.id, topic: l.topic, pending: 0, plan: true } });
+    }
     // Meetings that produced ideas the owner has not decided on yet.
     for (const m of all("SELECT m.*, (SELECT COUNT(*) FROM meeting_ideas i WHERE i.meeting_id = m.id AND i.status = 'pending') pending FROM meetings m WHERE m.status = 'done' ORDER BY m.ended_at DESC") as any[]) {
       if (m.pending > 0) items.push({ kind: 'meeting', task: { id: m.id, title: m.topic, updated_at: m.ended_at }, meeting: m });
@@ -349,11 +368,22 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
   app.get('/api/inbox', h(() => inbox()));
 
   // ---------- Idea meetings ----------
-  app.get('/api/meetings', h(() => all(`SELECT m.*, p.name project_name,
+  app.get('/api/meetings', h(() => {
+    const ms = all(`SELECT m.*, p.name project_name,
       (SELECT COUNT(*) FROM meeting_messages x WHERE x.meeting_id = m.id) said,
       (SELECT COUNT(*) FROM meeting_ideas i WHERE i.meeting_id = m.id AND i.status = 'pending') pending
-      FROM meetings m JOIN projects p ON p.id = m.project_id ORDER BY m.created_at DESC LIMIT 100`)));
+      FROM meetings m JOIN projects p ON p.id = m.project_id ORDER BY m.created_at DESC LIMIT 100`) as any[];
+    // Plans still waiting on the CEO / the owner appear in the same list (status 'selecting' | 'proposed' | 'failed').
+    const plans = all(`SELECT l.id, l.topic, l.status, l.created_at, l.rounds, p.name project_name, 0 pending, 0 said
+      FROM meeting_plans l JOIN projects p ON p.id = l.project_id WHERE l.status IN ('selecting','proposed','failed')`) as any[];
+    return [...plans, ...ms].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  }));
   app.get('/api/meetings/:id', h((req) => {
+    if (String(req.params.id).startsWith('plan_')) {
+      const plan = one('SELECT l.*, p.name project_name FROM meeting_plans l JOIN projects p ON p.id = l.project_id WHERE l.id = ?', req.params.id) as any;
+      if (!plan) throw new TaskError('meeting plan not found');
+      return { plan, suggested: JSON.parse(plan.suggested) };
+    }
     const m = one('SELECT m.*, p.name project_name FROM meetings m JOIN projects p ON p.id = m.project_id WHERE m.id = ?', req.params.id) as any;
     if (!m) throw new TaskError('meeting not found');
     const cur = m.current_session ? one('SELECT s.id, s.status, s.agent_id, a.name, a.role FROM sessions s JOIN agents a ON a.id = s.agent_id WHERE s.id = ?', m.current_session) : null;
@@ -361,8 +391,13 @@ export function createHq(db: DB, sm: SessionManager, opts: { dataDir: string; po
       messages: all('SELECT x.*, a.name, a.role FROM meeting_messages x JOIN agents a ON a.id = x.agent_id WHERE x.meeting_id = ? ORDER BY x.id', m.id),
       ideas: all('SELECT * FROM meeting_ideas WHERE meeting_id = ? ORDER BY rowid', m.id) };
   }));
-  app.post('/api/meetings', h((req) => meetings.start({ projectId: String(req.body?.projectId ?? ''), topic: String(req.body?.topic ?? ''),
-    participants: Array.isArray(req.body?.participants) ? req.body.participants : [], rounds: req.body?.rounds, actor: OWNER })));
+  /** With `participants` the meeting starts right away; without them the CEO proposes attendees first (a plan the owner approves). */
+  app.post('/api/meetings', h((req) => Array.isArray(req.body?.participants) && req.body.participants.length
+    ? meetings.start({ projectId: String(req.body?.projectId ?? ''), topic: String(req.body?.topic ?? ''), participants: req.body.participants, rounds: req.body?.rounds, actor: OWNER })
+    : meetings.propose({ projectId: String(req.body?.projectId ?? ''), topic: String(req.body?.topic ?? ''), rounds: req.body?.rounds, actor: OWNER })));
+  app.post('/api/meeting-plans/:id/approve', h((req) => meetings.approvePlan(req.params.id as string,
+    Array.isArray(req.body?.participants) ? req.body.participants : undefined, req.body?.rounds ? Number(req.body.rounds) : undefined, OWNER)));
+  app.post('/api/meeting-plans/:id/cancel', h((req) => { meetings.cancelPlan(req.params.id as string, OWNER); return { ok: true }; }));
   app.post('/api/meetings/:id/stop', h((req) => { meetings.stop(req.params.id as string, OWNER); return { ok: true }; }));
   app.post('/api/ideas/:id/:decision', h((req) => {
     const d = req.params.decision;

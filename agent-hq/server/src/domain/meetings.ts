@@ -13,6 +13,10 @@ export interface Meeting {
   id: string; project_id: string; topic: string; participants: string; rounds: number;
   status: 'running' | 'summarizing' | 'done' | 'stopped' | 'failed'; current_session: string | null; summary: string | null;
 }
+export interface MeetingPlan {
+  id: string; project_id: string; topic: string; rounds: number; suggested: string; note: string | null;
+  status: 'selecting' | 'proposed' | 'started' | 'cancelled' | 'failed'; session_id: string | null; meeting_id: string | null;
+}
 export interface Idea { title: string; description: string; assignee?: string; why?: string }
 
 /** Pull the summary JSON out of the facilitator's reply (```json block preferred, else the outermost {...}). */
@@ -23,6 +27,22 @@ export function parseSummary(text: string): { summary: string; ideas: Idea[] } |
     try {
       const o = JSON.parse(c.trim());
       if (Array.isArray(o.ideas)) return { summary: String(o.summary ?? ''), ideas: o.ideas.filter((i: any) => typeof i?.title === 'string') };
+    } catch { /* next */ }
+  }
+  return null;
+}
+
+/** Pull the CEO's attendee picks out of its reply: {"participants":[{"id","why"}],"note"}. */
+export function parseAttendees(text: string): { picks: { id: string; why: string }[]; note: string } | null {
+  const fenced = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((m) => m[1]);
+  const candidates = fenced.length ? fenced.reverse() : [text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)];
+  for (const c of candidates) {
+    try {
+      const o = JSON.parse(c.trim());
+      if (Array.isArray(o.participants)) {
+        const picks = o.participants.map((p: any) => (typeof p === 'string' ? { id: p, why: '' } : { id: String(p?.id ?? ''), why: String(p?.why ?? '') })).filter((p: any) => p.id);
+        return { picks, note: String(o.note ?? '') };
+      }
     } catch { /* next */ }
   }
   return null;
@@ -42,9 +62,13 @@ export class MeetingRoom extends EventEmitter {
     super();
     this.db = db; this.sm = sm; this.dataDir = dataDir;
     sm.on('status', (sid: string, status: SessionStatus) => { if (ENDED.includes(status)) this.onEnded(sid, status); });
+    db.prepare("UPDATE meeting_plans SET status = 'failed' WHERE status = 'selecting' AND (session_id IS NULL OR session_id IN (SELECT id FROM sessions WHERE status NOT IN ('queued','starting','running')))").run();
     // A restart kills live sessions: meetings that were mid-way are marked stopped (they can be continued by starting again).
     db.prepare("UPDATE meetings SET status = 'stopped', ended_at = datetime('now') WHERE status IN ('running','summarizing') AND (current_session IS NULL OR current_session IN (SELECT id FROM sessions WHERE status NOT IN ('queued','starting','running')))").run();
   }
+
+  /** Everyone in a meeting (attendee selection, speakers, CEO summary) runs on the `models.meeting` policy (default opus, owner 2026-11-19). */
+  private meetingModel() { return String(getPolicy(this.db, 'models.meeting', 'opus')); }
 
   private agent(id: string) { return this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRow | undefined; }
   get(id: string) { return this.db.prepare('SELECT * FROM meetings WHERE id = ?').get(id) as Meeting | undefined; }
@@ -63,6 +87,77 @@ export class MeetingRoom extends EventEmitter {
     audit(this.db, input.actor, 'meeting.start', id, { participants: people, rounds });
     this.next(id);
     return this.get(id)!;
+  }
+
+  // ---------------------------------------------------------------- CEO picks attendees, owner confirms
+  getPlan(id: string) { return this.db.prepare('SELECT * FROM meeting_plans WHERE id = ?').get(id) as MeetingPlan | undefined; }
+
+  /** Step 1: the CEO reads the topic + roster and proposes who should attend. Nothing starts until the owner approves. */
+  propose(input: { projectId: string; topic: string; rounds?: number; actor: string }): MeetingPlan {
+    const topic = String(input.topic ?? '').trim();
+    if (!topic) throw new TaskError('topic is empty');
+    if (!this.db.prepare('SELECT 1 FROM projects WHERE id = ?').get(input.projectId)) throw new TaskError('project not found');
+    const rounds = Math.min(3, Math.max(1, Number(input.rounds ?? 2) || 2));
+    const id = newId('plan');
+    this.db.prepare('INSERT INTO meeting_plans (id, project_id, topic, rounds) VALUES (?, ?, ?, ?)').run(id, input.projectId, topic, rounds);
+    const ceo = this.agent('ceo')!;
+    const spec = { ...buildSpec(ceo, this.selectionPrompt(topic), this.cwd({ project_id: input.projectId } as Meeting), 3, 'default'),
+      model: this.meetingModel(), tools: [] as string[], allowedTools: [] as string[] };
+    const sid = this.sm.enqueue({ agentId: 'ceo', actor: 'meeting', spec, purpose: 'meeting', projectId: input.projectId });
+    this.db.prepare('UPDATE meeting_plans SET session_id = ? WHERE id = ?').run(sid, id);
+    audit(this.db, input.actor, 'meeting.propose', id, { topic: topic.slice(0, 120) });
+    this.emit('change', id);
+    return this.getPlan(id)!;
+  }
+
+  /** Step 2: owner approves the list (CEO's picks as-is, or edited / extended). Starts the meeting. */
+  approvePlan(planId: string, participants: string[] | undefined, rounds: number | undefined, actor: string): Meeting {
+    const p = this.getPlan(planId);
+    if (!p) throw new TaskError('meeting plan not found');
+    if (p.status !== 'proposed') throw new TaskError(`plan is ${p.status}, not waiting for approval`);
+    const list = participants ?? (JSON.parse(p.suggested) as { id: string }[]).map((x) => x.id);
+    const m = this.start({ projectId: p.project_id, topic: p.topic, participants: list, rounds: rounds ?? p.rounds, actor });
+    this.db.prepare("UPDATE meeting_plans SET status = 'started', meeting_id = ? WHERE id = ?").run(m.id, planId);
+    this.emit('change', planId);
+    return m;
+  }
+
+  cancelPlan(planId: string, actor: string) {
+    const p = this.getPlan(planId);
+    if (!p || !['selecting', 'proposed'].includes(p.status)) return;
+    this.db.prepare("UPDATE meeting_plans SET status = 'cancelled' WHERE id = ?").run(planId);
+    if (p.status === 'selecting' && p.session_id) this.sm.stop(p.session_id, actor);
+    audit(this.db, actor, 'meeting.plan.cancel', planId);
+    this.emit('change', planId);
+  }
+
+  private onPlanSession(p: MeetingPlan, status: SessionStatus) {
+    if (p.status !== 'selecting') return;
+    const text = status === 'completed' ? (this.sm.get(p.session_id!)?.result_text ?? '') : '';
+    const parsed = parseAttendees(text);
+    const seen = new Set<string>();
+    const picks = (parsed?.picks ?? []).filter((x) => !seen.has(x.id) && seen.add(x.id) && x.id !== 'ceo' && this.agent(x.id)?.status === 'active').slice(0, 6);
+    if (picks.length < 2) {
+      this.db.prepare("UPDATE meeting_plans SET status = 'failed' WHERE id = ?").run(p.id);
+      audit(this.db, 'system', 'meeting.plan.failed', p.id, { status });
+    } else {
+      this.db.prepare("UPDATE meeting_plans SET status = 'proposed', suggested = ?, note = ? WHERE id = ?").run(JSON.stringify(picks), parsed?.note ?? '', p.id);
+      audit(this.db, 'ceo', 'meeting.plan.proposed', p.id, { picks: picks.map((x) => x.id) });
+    }
+    this.emit('change', p.id);
+  }
+
+  private selectionPrompt(topic: string) {
+    const roster = (this.db.prepare("SELECT a.id, a.role, a.title, d.name dept FROM agents a LEFT JOIN departments d ON d.id = a.department_id WHERE a.status = 'active' AND a.level > 1 ORDER BY a.level, a.rowid").all() as any[])
+      .map((a) => `- ${a.id}: ${a.title ?? a.role} (${a.dept ?? '-'})`).join('\n');
+    return [
+      '# เลือกผู้เข้าประชุมเสนอไอเดีย (คุณเป็นประธาน)',
+      `## หัวข้อจากเจ้าของ\n${topic}`,
+      `## ทีมที่เลือกได้ (ใช้ id)\n${roster}`,
+      'เลือกเฉพาะคนที่เกี่ยวข้องกับหัวข้อนี้จริงๆ 3-6 คน (อย่างน้อย 2) ไม่ต้องเลือกครบทุกแผนก เรียงลำดับคนพูดจากคนที่ควรเริ่มก่อน',
+      'เขียนเหตุผลสั้นๆ (ภาษาไทย) ว่าทำไมแต่ละคนถึงเกี่ยวข้อง แล้วตอบด้วย JSON นี้อย่างเดียวในบล็อก ```json',
+      '```json\n{"participants":[{"id":"<agent id>","why":"<เหตุผลสั้นๆ>"}],"note":"<ข้อสังเกตถึงเจ้าของ ถ้ามี>"}\n```',
+    ].join('\n\n');
   }
 
   stop(id: string, actor: string) {
@@ -114,7 +209,7 @@ export class MeetingRoom extends EventEmitter {
     if (said >= total) return this.summarize(m);
     const speaker = this.agent(people[said % people.length])!;
     const round = Math.floor(said / people.length) + 1;
-    const model = speaker.model_mode === 'fixed' ? speaker.model : getPolicy(this.db, 'models.meeting', 'sonnet');
+    const model = this.meetingModel();
     const spec = { ...buildSpec(speaker, this.speakerPrompt(m, speaker, round, people), this.cwd(m), 8, 'default', personalityPrompt(this.db, speaker.id)),
       model, tools: READ_ONLY, allowedTools: READ_ONLY };
     const sid = this.sm.enqueue({ agentId: speaker.id, actor: 'meeting', spec, purpose: 'meeting', projectId: m.project_id });
@@ -125,16 +220,23 @@ export class MeetingRoom extends EventEmitter {
   private summarize(m: Meeting) {
     const ceo = this.agent('ceo')!;
     const spec = { ...buildSpec(ceo, this.summaryPrompt(m), this.cwd(m), 4, 'default'),
-      model: getPolicy(this.db, 'models.meeting', 'sonnet'), tools: [] as string[], allowedTools: [] as string[] };
+      model: this.meetingModel(), tools: [] as string[], allowedTools: [] as string[] };
     const sid = this.sm.enqueue({ agentId: 'ceo', actor: 'meeting', spec, purpose: 'meeting', projectId: m.project_id });
     this.db.prepare("UPDATE meetings SET status = 'summarizing', current_session = ? WHERE id = ?").run(sid, m.id);
     this.emit('change', m.id);
   }
 
   private onEnded(sid: string, status: SessionStatus) {
+    const plan = this.db.prepare('SELECT * FROM meeting_plans WHERE session_id = ?').get(sid) as MeetingPlan | undefined;
+    if (plan) return this.onPlanSession(plan, status);
     const m = this.db.prepare('SELECT * FROM meetings WHERE current_session = ?').get(sid) as Meeting | undefined;
     if (!m || !['running', 'summarizing'].includes(m.status)) return;
     const s = this.sm.get(sid)!;
+    if (status === 'stopped') { // owner pressed Stop / Stop all on this session: the meeting stops, it did not fail
+      this.db.prepare("UPDATE meetings SET status = 'stopped', current_session = NULL, ended_at = datetime('now') WHERE id = ?").run(m.id);
+      audit(this.db, 'system', 'meeting.stop', m.id, { sessionId: sid });
+      return void this.emit('change', m.id);
+    }
     if (status !== 'completed' || !s.result_text?.trim()) {
       this.db.prepare("UPDATE meetings SET status = 'failed', ended_at = datetime('now') WHERE id = ?").run(m.id);
       audit(this.db, 'system', 'meeting.failed', m.id, { sessionId: sid, status });
@@ -174,7 +276,7 @@ export class MeetingRoom extends EventEmitter {
       `## ผู้เข้าประชุม\n${roster}`,
       `## สิ่งที่คุยกันมาแล้ว\n${this.transcript(m)}`,
       '## ตาคุณพูด',
-      `คุณคือ ${me.name} ตำแหน่ง ${me.role} ไฟล์โปรเจกต์อยู่ในโฟลเดอร์ปัจจุบัน เปิดอ่านได้ (Read/Glob/Grep) ถ้าช่วยให้ไอเดียแม่นขึ้น ห้ามแก้ไฟล์`,
+      `คุณคือ ${me.name} ตำแหน่ง ${me.role} ไฟล์โปรเจกต์อยู่ในโฟลเดอร์ปัจจุบัน เปิดอ่านได้ (Read/Glob/Grep) ถ้าช่วยให้ไอเดียแม่นขึ้น ห้ามแก้ไฟล์ (ถ้าโฟลเดอร์ว่าง แปลว่าเป็นโปรเจกต์ใหม่ที่ยังไม่มีโค้ด ให้เสนอจากโจทย์ได้เลย ไม่ต้องค้นหาไฟล์)`,
       round === 1
         ? '- เสนอไอเดีย 1-3 ข้อจากมุมมองตำแหน่งของคุณ แต่ละข้อต้องเป็นรูปธรรม ทำได้จริง บอกว่าได้ประโยชน์อะไร'
         : '- ต่อยอด แย้ง หรือรวมไอเดียของคนอื่น บอกชัดว่าเห็นด้วย/ไม่เห็นด้วยกับข้อไหนเพราะอะไร ห้ามพูดซ้ำสิ่งที่มีคนพูดแล้ว',

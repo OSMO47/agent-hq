@@ -6,6 +6,7 @@ import { seed } from './seed.ts';
 import { syncSkills } from './domain/skills.ts';
 import { SessionManager } from './runtime/sessionManager.ts';
 import { ClaudeCliAdapter } from './runtime/claudeCliAdapter.ts';
+import { ExternalCliAdapter, RoutingAdapter } from './runtime/externalCliAdapter.ts';
 import { createHq } from './app.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -19,7 +20,7 @@ if (seed(db)) console.log('[hq] seeded initial organization');
   const { loaded, missing } = syncSkills(db);
   console.log(`[hq] skills: ${loaded.length} loaded${missing.length ? `; not installed: ${missing.join(', ')}` : ''}`);
 }
-const sm = new SessionManager(db, new ClaudeCliAdapter());
+const sm = new SessionManager(db, new RoutingAdapter(new ClaudeCliAdapter(), new ExternalCliAdapter()));
 const staticDir = join(root, 'web', 'dist');
 const { server } = createHq(db, sm, { dataDir, port, staticDir: existsSync(staticDir) ? staticDir : undefined });
 

@@ -101,7 +101,7 @@ function App() {
     for (const it of items) {
       const k = key(it); if (!k || seen.current.has(k)) continue;
       seen.current.add(k);
-      const msg = it.kind === 'finished' ? `✓ ${it.project.name}: งานเสร็จแล้ว · deploy ไหม?` : it.kind === 'meeting' ? `◎ ประชุมเสร็จ: ${it.meeting.pending} ไอเดียรออนุมัติ` : `● ${it.task.title}: รอคุณตัดสินใจ`;
+      const msg = it.kind === 'finished' ? `✓ ${it.project.name}: งานเสร็จแล้ว · deploy ไหม?` : it.kind === 'meeting' ? (it.meeting.plan ? '◎ CEO เลือกผู้เข้าประชุมแล้ว: รอคุณอนุมัติ' : `◎ ประชุมเสร็จ: ${it.meeting.pending} ไอเดียรออนุมัติ`) : `● ${it.task.title}: รอคุณตัดสินใจ`;
       setToast(msg);
       try { if ('Notification' in window && Notification.permission === 'granted') new Notification('OSMO AGENT', { body: msg }); } catch { /* ignore */ }
       setRight(true); setTimeout(() => dispatchEvent(new Event('hq:inbox')));
@@ -262,7 +262,6 @@ function AutopilotToggle({ onToast, reloadOv }: { onToast: (s: string) => void; 
 // ---------------------------------------------------------------- Center header
 function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight }:
   { agent: any; org: any; page: string; ov: any; reloadOv: () => void; onToast: (s: string) => void; right: boolean; setRight: (f: (r: boolean) => boolean) => void }) {
-  const [confirm, setConfirm] = useState(false);
   const [checking, setChecking] = useState(false);
   const check = async () => {
     setChecking(true);
@@ -274,8 +273,6 @@ function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight
   const dept = agent && org?.departments.find((d: any) => d.id === agent.department_id);
 
   async function stopAll() {
-    if (!confirm) { setConfirm(true); setTimeout(() => setConfirm(false), 3000); return; }
-    setConfirm(false);
     const r = await api('POST', '/api/owner/stop-all'); onToast(`Stopped ${r.stopped} session(s)`); reloadOv();
   }
 
@@ -307,7 +304,11 @@ function CenterHeader({ agent, org, page, ov, reloadOv, onToast, right, setRight
             <div className={`h-full rounded-full ${pct == null ? '' : pct >= 90 ? 'bg-shu' : pct >= 70 ? 'bg-kin' : 'bg-matcha'} ${checking ? 'breathe' : ''}`} style={{ width: `${pct ?? 0}%` }} />
           </div>
         </button>
-        <button className="btn btn-danger" onClick={stopAll}>■ {confirm ? 'Click again' : 'Stop all'}</button>
+        <button className={`btn ${ov?.paused ? 'btn-primary' : ''}`}
+          title={ov?.paused ? 'ทำงานต่อ: งานที่รอคิวจะเริ่มทำ' : 'หยุดงานชั่วคราว: ไม่เริ่มงานใหม่ (การประชุมยังรันได้ และงานที่กำลังทำอยู่ไม่ถูกฆ่า)'}
+          onClick={() => api('POST', '/api/owner/pause', { paused: !ov?.paused }).then(() => { reloadOv(); onToast(ov?.paused ? 'ทำงานต่อแล้ว' : 'หยุดงานแล้ว: ประชุมได้ งานใหม่ไม่เริ่ม'); })}>
+          {ov?.paused ? '▶ ทำงานต่อ' : '❚❚ หยุดงาน (ประชุม)'}</button>
+        <button className="btn btn-danger" title="ฆ่าทุก session ที่กำลังรันและล้างคิว รวมถึงการประชุม" onClick={stopAll}>■ หยุดทุกอย่าง</button>
         <button className="btn btn-ghost h-7 w-7 p-0" onClick={() => setRight((r) => !r)} title="Toggle right bar (Ctrl+.)" aria-label="Toggle right bar">{right ? '⇥' : '⇤'}</button>
       </div>
     </header>

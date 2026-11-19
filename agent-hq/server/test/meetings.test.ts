@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { openDb, setPolicy } from '../src/db.ts';
 import { seed } from '../src/seed.ts';
 import { SessionManager } from '../src/runtime/sessionManager.ts';
-import { MeetingRoom, parseSummary } from '../src/domain/meetings.ts';
+import { MeetingRoom, parseSummary, parseAttendees } from '../src/domain/meetings.ts';
 import { getTask } from '../src/domain/tasks.ts';
 import { ScriptedAdapter, tick } from './helpers.ts';
 
@@ -33,11 +33,11 @@ test('meeting: speakers take turns (read-only, each sees what was said), CEO sum
   await settle();
   assert.equal(ad.runs.length, 1, 'one speaker at a time');
   assert.deepEqual(ad.runs[0].spec.tools, ['Read', 'Glob', 'Grep'], 'read-only');
-  assert.equal(ad.runs[0].spec.model, 'opus', 'Product & Design leader is fixed on opus');
+  assert.equal(ad.runs[0].spec.model, 'opus', 'meetings run on the meeting model (opus)');
   assert.match(ad.runs[0].spec.prompt, /รอบ 1\/2/);
 
   await speak(ad, '- แจ้งเตือนสตรีค');
-  assert.equal(ad.runs[1].spec.model, 'sonnet', 'others use the meeting model');
+  assert.equal(ad.runs[1].spec.model, 'opus', 'others use the meeting model');
   assert.match(ad.runs[1].spec.prompt, /แจ้งเตือนสตรีค/, 'second speaker sees the first');
   await speak(ad, '- ภารกิจประจำวันกดแล้วไปบทเรียนเลย');
   await speak(ad, '- เห็นด้วย');
@@ -81,4 +81,44 @@ test('meeting: validation, stop, and a failed turn ends the meeting', async () =
 test('parseSummary tolerates prose around the JSON', () => {
   assert.equal(parseSummary('ok {"summary":"s","ideas":[{"title":"a"}]} end')!.ideas.length, 1);
   assert.equal(parseSummary('no json'), null);
+});
+
+test('meeting plan: CEO picks attendees, owner edits and approves, then the meeting starts ', async () => {
+  const { db, ad, room } = setup();
+  const plan = room.propose({ projectId: 'p1', topic: 'ปรับหน้าตาแอป', rounds: 1, actor: 'owner' });
+  await settle();
+  assert.equal(ad.runs.length, 1);
+  assert.deepEqual(ad.runs[0].spec.tools, []);
+  assert.equal(ad.runs[0].spec.model, 'opus');
+  assert.match(ad.runs[0].spec.prompt, /ปรับหน้าตาแอป/);
+  assert.equal(room.getPlan(plan.id)!.status, 'selecting');
+  assert.throws(() => room.approvePlan(plan.id, undefined, undefined, 'owner'), /not waiting/);
+
+  await speak(ad, '{"participants":[{"id":"prod-dir","why":"ดูแลดีไซน์"},{"id":"nobody","why":"x"},{"id":"ceo","why":"x"},{"id":"qa-dir","why":"ทดสอบ"}],"note":"ok"}');
+  const p = room.getPlan(plan.id)!;
+  assert.equal(p.status, 'proposed');
+  assert.deepEqual((JSON.parse(p.suggested) as any[]).map((x) => x.id), ['prod-dir', 'qa-dir'], 'unknown ids and the CEO are dropped');
+  assert.equal(ad.runs.length, 1, 'nothing starts before the owner approves');
+
+  const m = room.approvePlan(plan.id, ['prod-dir', 'qa-dir', 'frontend-developer'], undefined, 'owner');
+  assert.deepEqual(JSON.parse(m.participants), ['prod-dir', 'qa-dir', 'frontend-developer'], 'owner added a member');
+  assert.equal(m.rounds, 1);
+  assert.equal(room.getPlan(plan.id)!.status, 'started');
+  await settle();
+  assert.equal(ad.runs[1].spec.model, 'opus');
+  assert.ok(db.prepare('SELECT 1 FROM meetings WHERE id = ?').get(m.id));
+});
+
+test('meeting plan: too few picks fails, cancel works, policy model is honoured', async () => {
+  const { db, ad, room } = setup();
+  const a = room.propose({ projectId: 'p1', topic: 'x', actor: 'owner' }); await settle();
+  await speak(ad, '{"participants":[{"id":"prod-dir"}]}');
+  assert.equal(room.getPlan(a.id)!.status, 'failed');
+  const b = room.propose({ projectId: 'p1', topic: 'y', actor: 'owner' }); await settle();
+  room.cancelPlan(b.id, 'owner');
+  assert.equal(room.getPlan(b.id)!.status, 'cancelled');
+  setPolicy(db, 'models.meeting', 'sonnet', 'test');
+  room.propose({ projectId: 'p1', topic: 'z', actor: 'owner' }); await settle();
+  assert.equal(ad.runs.at(-1)!.spec.model, 'sonnet');
+  assert.equal(parseAttendees('no json'), null);
 });

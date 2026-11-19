@@ -7,8 +7,8 @@ import './meeting-room.css';
 const STATUS: Record<string, [string, string]> = {
   running: ['กำลังประชุม', 'text-kin'], summarizing: ['CEO กำลังสรุป', 'text-kin'], done: ['เสร็จแล้ว', 'text-matcha'],
   stopped: ['หยุดแล้ว', 'text-faint'], failed: ['ล้มเหลว', 'text-shu'],
+  selecting: ['CEO กำลังเลือกผู้เข้าประชุม', 'text-kin'], proposed: ['รออนุมัติรายชื่อ', 'text-accent'],
 };
-const DEFAULT_PEOPLE = ['prod-dir', 'eng-dir', 'ui-ux-designer', 'qa-dir'];
 /** สีประจำที่นั่ง (วนใช้ตามลำดับผู้เข้าประชุม) */
 // Mid-tone hues: readable as text and rings on both the light (Chiikawa) and the dark themes.
 const HUES = ['#4f7fd1', '#4f9a3c', '#cf5a9e', '#d07c22', '#2f9aa3', '#8a62d6'];
@@ -34,7 +34,7 @@ export default function Meetings({ param }: { param?: string }) {
           {list.data?.length === 0 && <Empty>ยังไม่มีการประชุม</Empty>}
           {list.data?.map((m) => {
             const [label, tone] = STATUS[m.status] ?? [m.status, 'text-dim'];
-            const running = ['running', 'summarizing'].includes(m.status);
+            const running = ['running', 'summarizing', 'selecting'].includes(m.status);
             return (
               <a key={m.id} href={`#/meetings/${m.id}`}
                 className={`mr-msg block border-b border-l-2 border-line/60 px-4 py-2.5 transition-colors ${m.id === sel ? 'border-l-accent bg-raise' : 'border-l-transparent hover:bg-raise/50'}`}>
@@ -50,7 +50,7 @@ export default function Meetings({ param }: { param?: string }) {
           })}
         </div>
       </div>
-      {sel === 'new' ? <NewMeeting /> : <Room key={sel} id={sel} />}
+      {sel === 'new' ? <NewMeeting /> : sel.startsWith('plan_') ? <Plan key={sel} id={sel} /> : <Room key={sel} id={sel} />}
     </div>
   );
 }
@@ -59,55 +59,54 @@ function NewMeeting() {
   const projects = useResource<any[]>('/api/projects', ['project']);
   const org = useResource<{ departments: any[]; agents: any[] }>('/api/org', ['org']);
   const [topic, setTopic] = useState(''); const [pid, setPid] = useState('');
-  const [people, setPeople] = useState<string[]>(DEFAULT_PEOPLE);
+  const [isNew, setIsNew] = useState(false); const [pname, setPname] = useState(''); const [ppath, setPpath] = useState('');
   const [rounds, setRounds] = useState(2);
   const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
   useEffect(() => { if (!pid && projects.data?.[0]) setPid(projects.data[0].id); }, [projects.data, pid]);
   if (!org.data || !projects.data) return <Empty>Loading…</Empty>;
-  if (projects.data.length === 0) return <Empty>สร้างโปรเจกต์ใน Task board ก่อน ไอเดียที่อนุมัติจะกลายเป็นงานในโปรเจกต์นั้น</Empty>;
-  const toggle = (id: string) => setPeople((p) => (p.includes(id) ? p.filter((x) => x !== id) : p.length >= 6 ? p : [...p, id]));
-  const groups = org.data.departments.map((d) => ({ d, agents: org.data!.agents.filter((a) => a.department_id === d.id && a.status === 'active').sort((a, b) => a.level - b.level) }));
+  const newMode = isNew || projects.data.length === 0;
 
   return (
     <div className="min-h-0 overflow-y-auto">
       <form className="mx-auto max-w-[760px] space-y-5 p-6" onSubmit={async (e) => {
         e.preventDefault(); setErr(''); setBusy(true);
-        try { const m = await api('POST', '/api/meetings', { projectId: pid, topic, participants: people, rounds }); location.hash = `#/meetings/${m.id}`; }
+        try {
+          let projectId = pid;
+          if (newMode) {
+            const p = await api('POST', '/api/projects', { name: pname.trim(), repoPath: ppath.trim() || null });
+            projectId = p.id;
+          }
+          const m = await api('POST', '/api/meetings', { projectId, topic, rounds });
+          location.hash = `#/meetings/${m.id}`;
+        }
         catch (x) { setErr((x as Error).message); setBusy(false); }
       }}>
         <div>
           <div className="text-[15px] font-semibold">ห้องประชุมเสนอไอเดีย</div>
           <div className="mt-1 text-[12px] leading-relaxed text-dim">
-            ตั้งหัวข้อ แล้วทีมจะผลัดกันเสนอไอเดียทีละคน แต่ละคนเห็นสิ่งที่คนก่อนพูดและเปิดดูโค้ดได้ (อ่านอย่างเดียว ไม่แก้ไฟล์)
+            ตั้งหัวข้อ แล้ว CEO จะเลือกคนที่เกี่ยวข้องมาเข้าประชุมและส่งรายชื่อให้คุณตรวจ (อนุมัติหรือเพิ่ม/ลดคนได้) จากนั้นทีมจะผลัดกันเสนอไอเดียทีละคน แต่ละคนเห็นสิ่งที่คนก่อนพูดและเปิดดูโค้ดได้ (อ่านอย่างเดียว ไม่แก้ไฟล์)
             จบแล้ว CEO สรุปไอเดียที่ดีที่สุดเป็นการ์ด คุณกด <span className="text-matcha">อนุมัติ</span> ข้อไหน ข้อนั้นจะกลายเป็นงานให้ทีมทำต่อเอง
           </div>
         </div>
         <label className="block space-y-1"><span className="label">หัวข้อ / โจทย์</span>
           <textarea className="field" rows={4} required autoFocus value={topic} onChange={(e) => setTopic(e.target.value)}
             placeholder="เช่น ทำยังไงให้ผู้เรียน N5 กลับมาเรียนทุกวัน โดยไม่ต้องเพิ่มเนื้อหาใหม่" /></label>
-        <label className="block space-y-1"><span className="label">โปรเจกต์ (ทีมจะดูโค้ดของโปรเจกต์นี้ และไอเดียที่อนุมัติจะเป็นงานในนี้)</span>
-          <select className="field" value={pid} onChange={(e) => setPid(e.target.value)}>{projects.data.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-
         <div className="space-y-2">
-          <div className="flex items-baseline justify-between"><span className="label">ผู้เข้าประชุม (2-6 คน) · CEO เป็นประธานสรุปเสมอ</span><span className="text-[11px] text-faint">เลือกแล้ว {people.length}</span></div>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
-            {groups.map(({ d, agents }) => (
-              <div key={d.id} className="rounded-lg border border-line p-2">
-                <div className="mb-1 px-1 text-[10.5px] uppercase tracking-wider text-faint">{d.name}</div>
-                {agents.map((a) => {
-                  const on = people.includes(a.id);
-                  return (
-                    <button type="button" key={a.id} onClick={() => toggle(a.id)}
-                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11.5px] transition-colors ${on ? 'bg-accent/15 text-fg' : 'text-dim hover:bg-raise'}`}>
-                      <span className={`grid size-3.5 shrink-0 place-items-center rounded border text-[9px] ${on ? 'border-accent bg-accent text-accent-fg' : 'border-line-strong'}`}>{on ? '✓' : ''}</span>
-                      <span className="truncate">{a.name === a.role ? a.role : `${a.name} · ${a.title ?? a.role}`}</span>
-                      {a.model_mode === 'fixed' && <span className="chip ml-auto text-kin">{a.model}</span>}
-                    </button>
-                  );
-                })}
-              </div>
+          <span className="label">โปรเจกต์ (ไอเดียที่อนุมัติจะเป็นงานในโปรเจกต์นี้)</span>
+          <div className="flex gap-2">
+            {[[false, 'เลือกโปรเจกต์ที่มีอยู่'], [true, '＋ โปรเจกต์ใหม่']].map(([v, l]) => (
+              <button type="button" key={String(v)} disabled={!v && projects.data!.length === 0} onClick={() => setIsNew(v as boolean)}
+                className={`rounded-md border px-3 py-1 text-[12px] disabled:opacity-40 ${newMode === v ? 'border-accent text-accent' : 'border-line text-dim hover:border-line-strong'}`}>{l as string}</button>
             ))}
           </div>
+          {newMode ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input className="field" required value={pname} onChange={(e) => setPname(e.target.value)} placeholder="ชื่อโปรเจกต์ใหม่" />
+              <input className="field" value={ppath} onChange={(e) => setPpath(e.target.value)} placeholder="โฟลเดอร์ (ไม่บังคับ — เว้นว่าง = สร้างโฟลเดอร์ว่างให้)" />
+            </div>
+          ) : (
+            <select className="field" value={pid} onChange={(e) => setPid(e.target.value)}>{projects.data.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -116,11 +115,107 @@ function NewMeeting() {
             <button type="button" key={r} onClick={() => setRounds(r)}
               className={`rounded-md border px-3 py-1 text-[12px] ${rounds === r ? 'border-accent text-accent' : 'border-line text-dim hover:border-line-strong'}`}>{r}</button>
           ))}
-          <span className="text-[11px] text-faint">รอบแรกเสนอไอเดีย รอบถัดไปต่อยอด/แย้งกัน · ใช้ทั้งหมด ~{people.length * rounds + 1} session (อ่านอย่างเดียว)</span>
+          <span className="text-[11px] text-faint">รอบแรกเสนอไอเดีย รอบถัดไปต่อยอด/แย้งกัน</span>
         </div>
         {err && <div className="text-[12px] text-shu">{err}</div>}
-        <button className="btn btn-primary h-9 px-5" disabled={busy || people.length < 2 || !topic.trim()}>◎ เริ่มประชุม</button>
+        <button className="btn btn-primary h-9 px-5" disabled={busy || !topic.trim() || (newMode && !pname.trim())}>◎ ให้ CEO เลือกผู้เข้าประชุม</button>
       </form>
+    </div>
+  );
+}
+
+/** CEO proposed attendees → owner reviews: keep, remove, or add people, then approve to start. */
+/** Long briefs (pasted specs) must not push the table off screen: show 2 lines, expand on click. */
+function Topic({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 160 || text.split('\n').length > 2;
+  return (
+    <div>
+      <div className={`whitespace-pre-wrap text-[14px] font-semibold leading-snug ${open ? 'max-h-[40vh] overflow-y-auto' : 'line-clamp-2'}`}>{text}</div>
+      {long && <button type="button" className="mt-0.5 text-[11px] text-accent hover:underline" onClick={() => setOpen(!open)}>{open ? 'ย่อหัวข้อ ▲' : 'ดูหัวข้อทั้งหมด ▼'}</button>}
+    </div>
+  );
+}
+
+/** CEO proposed attendees → owner reviews. (see Plan below) */
+function Plan({ id }: { id: string }) {
+  const { data } = useResource<any>(`/api/meetings/${id}`, ['meeting']);
+  const org = useResource<{ departments: any[]; agents: any[] }>('/api/org', ['org']);
+  const [people, setPeople] = useState<string[] | null>(null);
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  useEffect(() => { if (data?.plan.status === 'proposed' && people === null) setPeople(data.suggested.map((x: any) => x.id)); }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!data || !org.data) return <Empty>Loading…</Empty>;
+  const p = data.plan;
+  const why: Record<string, string> = Object.fromEntries(data.suggested.map((x: any) => [x.id, x.why]));
+  const [label, tone] = STATUS[p.status] ?? [p.status, 'text-dim'];
+  const sel = people ?? [];
+  const toggle = (aid: string) => setPeople((cur) => { const c = cur ?? []; return c.includes(aid) ? c.filter((x) => x !== aid) : c.length >= 6 ? c : [...c, aid]; });
+  const groups = org.data.departments
+    .map((d) => ({ d, agents: org.data!.agents.filter((a) => a.department_id === d.id && a.status === 'active' && a.id !== 'ceo').sort((a, b) => a.level - b.level) }))
+    .filter((g) => g.agents.length);
+  const go = async (path: string, body?: any) => {
+    setBusy(true); setErr('');
+    try { const r = await api('POST', path, body); location.hash = path.endsWith('/approve') ? `#/meetings/${r.id}` : '#/meetings/new'; }
+    catch (x) { setErr((x as Error).message); setBusy(false); }
+  };
+  return (
+    <div className="min-h-0 overflow-y-auto">
+      <div className="mx-auto max-w-[760px] space-y-4 p-6">
+        <div>
+          <Topic text={p.topic} />
+          <div className="mt-1 flex items-center gap-2 text-[11px]">
+            <span className={`inline-flex items-center gap-1.5 ${tone}`}>{p.status === 'selecting' && <span className="mr-livedot" />}{label}</span>
+            <span className="text-faint">· {p.project_name} · {p.rounds} รอบ</span>
+          </div>
+        </div>
+        {p.status === 'selecting' && (
+          <div className="mr-msg flex items-center gap-3 rounded-lg border border-kin/40 px-3 py-2.5 text-[12px] text-kin">
+            <span className="mr-dots"><i /><i /><i /></span>CEO กำลังดูหัวข้อและเลือกคนที่เกี่ยวข้อง…
+            <button className="btn ml-auto h-8 px-3" disabled={busy} onClick={() => go(`/api/meeting-plans/${id}/cancel`)}>ยกเลิก</button>
+          </div>
+        )}
+        {p.status === 'failed' && <div className="mr-msg text-[12px] text-shu">CEO เลือกรายชื่อไม่สำเร็จ <a className="underline" href="#/meetings/new">ลองใหม่</a></div>}
+        {p.status === 'proposed' && (
+          <>
+            <div className="mr-msg rounded-lg border border-accent/40 bg-accent/[.05] p-3 text-[12px] leading-relaxed">
+              <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-accent">CEO เลือกคนเหล่านี้มาประชุม</div>
+              {data.suggested.map((x: any, i: number) => {
+                const a = org.data!.agents.find((y) => y.id === x.id);
+                return <div key={x.id} className="mr-msg" style={{ animationDelay: `${0.2 + i * 0.12}s` }}>• <b>{a?.name ?? x.id}</b> <span className="text-faint">{a?.title ?? a?.role}</span>{x.why && <span className="text-dim"> — {x.why}</span>}</div>;
+              })}
+              {p.note && <div className="mr-msg mt-1.5 text-dim" style={{ animationDelay: `${0.2 + data.suggested.length * 0.12}s` }}>หมายเหตุจาก CEO: {p.note}</div>}
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="label">ผู้เข้าประชุม (2-6 คน) · กดเพิ่ม/เอาออกได้</span>
+              <span className="text-[11px] text-faint">เลือกแล้ว {sel.length}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+              {groups.map(({ d, agents }, gi) => (
+                <div key={d.id} className="mr-msg rounded-lg border border-line p-2" style={{ animationDelay: `${0.35 + gi * 0.05}s` }}>
+                  <div className="mb-1 px-1 text-[10.5px] uppercase tracking-wider text-faint">{d.name}</div>
+                  {agents.map((a) => {
+                    const on = sel.includes(a.id);
+                    return (
+                      <button type="button" key={a.id} onClick={() => toggle(a.id)} title={why[a.id]}
+                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11.5px] transition-colors ${on ? 'bg-accent/15 text-fg' : 'text-dim hover:bg-raise'}`}>
+                        <span className={`grid size-3.5 shrink-0 place-items-center rounded border text-[9px] ${on ? 'border-accent bg-accent text-accent-fg' : 'border-line-strong'}`}>{on ? '✓' : ''}</span>
+                        <span className="truncate">{a.name === a.role ? a.role : `${a.name} · ${a.title ?? a.role}`}</span>
+                        {why[a.id] !== undefined && <span className="chip ml-auto text-kin">CEO</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            {err && <div className="text-[12px] text-shu">{err}</div>}
+            <div className="flex gap-2">
+              <button className="btn btn-primary h-9 px-5" disabled={busy || sel.length < 2 || sel.length > 6}
+                onClick={() => go(`/api/meeting-plans/${id}/approve`, { participants: sel })}>✓ อนุมัติ → เริ่มประชุม</button>
+              <button className="btn h-9 px-4" disabled={busy} onClick={() => go(`/api/meeting-plans/${id}/cancel`)}>ยกเลิก</button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -173,7 +268,7 @@ function Room({ id }: { id: string }) {
       <div className="shrink-0 border-b border-line px-5 py-3">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-semibold leading-snug">{m.topic}</div>
+            <Topic text={m.topic} />
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
               <span className={`inline-flex items-center gap-1.5 ${tone}`}>{active && <span className="mr-livedot" />}{label}{active && !summarizing ? ` · รอบ ${roundNow}` : ''}</span>
               <span className="text-faint">· {m.project_name} · {m.rounds} รอบ ·</span>
@@ -247,12 +342,12 @@ function Stage({ people, who, speakerId, phase, live, banner }: {
         <div className="mr-spot" style={{ left: (sp?.x ?? CEO_POS.x) - 130, top: (sp?.y ?? CEO_POS.y) - 130, opacity: sp && phase !== 'queued' ? 1 : 0 }} />
         <div className="mr-table"><span className="text-[10.5px] tracking-[.14em] text-faint">โต๊ะประชุม · 会議</span></div>
 
-        {seats.map((s) => {
+        {seats.map((s, si) => {
           const isCur = s.aid === speakerId;
           const st: Phase = isCur ? phase : 'idle';
           const dim = !!speakerId && !isCur && phase === 'speaking';
           return (
-            <div key={s.aid} className={`mr-seat ${st} ${dim ? 'dim' : ''}`} style={{ left: s.x - 36, top: s.y - 36, '--hue': s.hue } as CSSProperties}>
+            <div key={s.aid} className={`mr-seat ${st} ${dim ? 'dim' : ''}`} style={{ left: s.x - 36, top: s.y - 36, '--hue': s.hue, animationDelay: `${si * 0.08}s` } as CSSProperties}>
               <div className="mr-av">
                 {who(s.aid)?.avatar != null
                   ? <img src={`/api/agents/${encodeURIComponent(s.aid)}/avatar?v=${who(s.aid).avatar}`} alt={s.name} className="size-full object-cover" draggable={false} />

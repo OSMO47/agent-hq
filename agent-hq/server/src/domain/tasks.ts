@@ -99,10 +99,10 @@ export function claimTask(db: DB, taskId: string, sessionId: string, actor: stri
   });
 }
 
-/** Tasks that are ASSIGNED, unlocked, and whose dependencies are all DONE — ordered by priority. */
+/** Tasks (of projects that are not paused) that are ASSIGNED, unlocked, and whose dependencies are all DONE — ordered by priority. */
 export function readyTasks(db: DB, projectId?: string): Task[] {
   return db.prepare(`SELECT t.* FROM tasks t
-     WHERE t.status = 'ASSIGNED' AND t.lock_session IS NULL ${projectId ? 'AND t.project_id = ?' : ''}
+     WHERE t.status = 'ASSIGNED' AND t.lock_session IS NULL AND t.project_id NOT IN (SELECT id FROM projects WHERE status = 'paused') ${projectId ? 'AND t.project_id = ?' : ''}
        AND NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN tasks x ON x.id = d.depends_on
                        WHERE d.task_id = t.id AND x.status <> 'DONE')
      ORDER BY t.priority, t.created_at`).all(...(projectId ? [projectId] : [])) as unknown as Task[];

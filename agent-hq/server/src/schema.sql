@@ -255,3 +255,17 @@ CREATE TABLE IF NOT EXISTS meeting_ideas (
   task_id     TEXT REFERENCES tasks(id),
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- CEO picks who should attend a meeting; the owner confirms (or edits) the list before it starts.
+CREATE TABLE IF NOT EXISTS meeting_plans (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id),
+  topic       TEXT NOT NULL,
+  rounds      INTEGER NOT NULL DEFAULT 2,
+  suggested   TEXT NOT NULL DEFAULT '[]',   -- JSON [{id, why}] chosen by the CEO
+  note        TEXT,
+  status      TEXT NOT NULL DEFAULT 'selecting' CHECK (status IN ('selecting','proposed','started','cancelled','failed')),
+  session_id  TEXT,
+  meeting_id  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);

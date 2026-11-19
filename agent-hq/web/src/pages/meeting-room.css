@@ -16,7 +16,7 @@
   transition: left .7s cubic-bezier(.6,0,.2,1), top .7s cubic-bezier(.6,0,.2,1), opacity .5s;
 }
 
-.mr-seat { position: absolute; width: 72px; height: 72px; z-index: 3; }
+.mr-seat { position: absolute; width: 72px; height: 72px; z-index: 3; animation: mr-msg .5s cubic-bezier(.2,.9,.3,1) both; }
 .mr-av {
   overflow: hidden;
   width: 72px; height: 72px; border-radius: 50%; border: 2px solid var(--hue); box-sizing: border-box;
@@ -112,6 +112,11 @@
 @keyframes mr-ghost { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translate(120px,-300px) scale(.4); } }
 @keyframes mr-crumple { 0% { transform: rotate(var(--rot)); } 35% { transform: rotate(5deg) scale(.94,.86) skewX(-5deg); } 100% { transform: rotate(2deg) scale(.97); opacity: .42; filter: grayscale(1); } }
 
+/* Reduced motion (Windows "Animation effects" off, RDP, etc.): keep the small feedback that shows the room is alive
+   (live dot, thinking dots, voice wave, speaker ring, caret, bubbles, fade-in of new messages) and drop only the big movement. */
 @media (prefers-reduced-motion: reduce) {
-  .mr-root *, .mr-root *::before, .mr-root *::after { animation: none !important; transition: none !important; }
+  .mr-root .mr-msg, .mr-root .mr-seat { animation-name: mr-fade; }
+  .mr-root .mr-idea.fly, .mr-root .mr-idea.approved, .mr-root .mr-idea.rejected, .mr-root .mr-banner,
+  .mr-root .mr-stamp.anim, .mr-root .mr-ghost, .mr-root .mr-seat.queued .mr-av { animation: none !important; }
+  .mr-root .mr-spot, .mr-root .mr-marker { transition: opacity .3s; }
 }

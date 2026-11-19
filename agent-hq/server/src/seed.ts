@@ -24,7 +24,7 @@ export const DEFAULT_POLICIES: Record<string, unknown> = {
   'runtime.maxContinuations': 1,       // out of turns at the top model: continue the same conversation this many times before failing
   'org.paused': false,
   'org.autoPilot': true,               // CEO assigns, ready work starts, clean results auto-approve
-  'models.meeting': 'sonnet',          // model for meeting speakers (design agents stay on opus)
+  'models.meeting': 'opus',            // model for everyone in meetings (owner: opus)
   'runtime.permissionMode': 'auto',    // Claude Code auto mode for work sessions; deny rules still win
   'recruitment.requiresOwnerApproval': true,
   'recruitment.maxAgents': 40,
